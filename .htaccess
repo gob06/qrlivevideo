@@ -1,0 +1,21 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block direct access to sensitive files and directories
+    RewriteRule ^(\.env|composer\.(json|lock)|schema\.(sqlite|mariadb)\.sql|router\.php|cron_cleanup\.php) - [F,L]
+    RewriteRule ^(src|config|views|storage)(/|$) - [F,L]
+
+    # Route everything else into public/ if document root points to project root
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+<FilesMatch "\.(env|sqlite|sqlite3|db|sql|log)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

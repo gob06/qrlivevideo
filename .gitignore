@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.sqlite*
+storage/install.lock
+public/uploads/logos/*
+!public/uploads/logos/.htaccess
+
