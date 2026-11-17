@@ -2,9 +2,11 @@
 deployment:
   tasks:
     - export DEPLOYPATH=${HOME}/public_html/qrlive/
-    - /bin/mkdir -p "${DEPLOYPATH}" "${DEPLOYPATH}storage/logs" "${DEPLOYPATH}public/uploads/logos"
-    - rsync -a --exclude='.git' --exclude='.cpanel.yml' --exclude='.env' --exclude='.env.*' --exclude='node_modules' --exclude='dist' --exclude='storage/install.lock' --exclude='storage/cf_turn_cache.json' --exclude='storage/logs/*' --exclude='storage/*.sqlite*' --exclude='public/uploads/logos/*' --exclude='*.sqlite*' ./ "${DEPLOYPATH}"
+    - /bin/mkdir -p "${DEPLOYPATH}" "${DEPLOYPATH}public" "${DEPLOYPATH}storage/logs" "${DEPLOYPATH}public/uploads/logos"
+    - /bin/cp -rf config src views schema.mariadb.sql cron_cleanup.php .htaccess .env.example "${DEPLOYPATH}"
+    - /bin/cp -rf public/index.php public/.htaccess public/assets "${DEPLOYPATH}public/"
     - /bin/cp -f storage/.htaccess "${DEPLOYPATH}storage/.htaccess"
+    - /bin/cp -f storage/logs/.gitkeep "${DEPLOYPATH}storage/logs/.gitkeep"
     - /bin/cp -f public/uploads/logos/.htaccess "${DEPLOYPATH}public/uploads/logos/.htaccess"
-    - if [ -f "${DEPLOYPATH}storage/install.lock" ]; then /bin/rm -f "${DEPLOYPATH}install.php"; fi
+    - if [ ! -f "${DEPLOYPATH}storage/install.lock" ]; then /bin/cp -f install.php "${DEPLOYPATH}install.php"; else /bin/rm -f "${DEPLOYPATH}install.php"; fi
     - /bin/chmod 755 "${DEPLOYPATH}storage" "${DEPLOYPATH}storage/logs" "${DEPLOYPATH}public/uploads/logos"
