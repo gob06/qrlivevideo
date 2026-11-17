@@ -28,6 +28,12 @@ try {
         exit;
     }
 
+    // One-time installer (supports Document Root pointing directly to public/)
+    if ($path === '/install.php' && is_file(dirname(__DIR__) . '/install.php')) {
+        require dirname(__DIR__) . '/install.php';
+        exit;
+    }
+
     // Audience Join Page
     if (preg_match('#^/join/([a-z0-9-]+)$#', $path, $m) && $method === 'GET') {
         PageController::renderAudience($m[1]);

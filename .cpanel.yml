@@ -1,7 +1,7 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=${HOME}/public_html/
+    - export DEPLOYPATH=${HOME}/qrlive/
     - /bin/mkdir -p "${DEPLOYPATH}" "${DEPLOYPATH}storage/logs" "${DEPLOYPATH}public/uploads/logos"
     - rsync -a --exclude='.git' --exclude='.cpanel.yml' --exclude='.env' --exclude='.env.*' --exclude='node_modules' --exclude='dist' --exclude='storage/install.lock' --exclude='storage/cf_turn_cache.json' --exclude='storage/logs/*' --exclude='storage/*.sqlite*' --exclude='public/uploads/logos/*' --exclude='*.sqlite*' ./ "${DEPLOYPATH}"
     - /bin/cp -f storage/.htaccess "${DEPLOYPATH}storage/.htaccess"
