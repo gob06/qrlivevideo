@@ -607,7 +607,7 @@ el.joinForm.addEventListener('submit', async (ev) => {
     stopTransport = startAdaptiveTransport({
       mode: cfg.signalingMode,
       sseUrlFn: () => `/api/audience/stream?slug=${encodeURIComponent(cfg.eventSlug)}&token=${encodeURIComponent(sessionToken)}`,
-      pollUrlFn: () => `/api/audience/poll?slug=${encodeURIComponent(cfg.eventSlug)}&token=${encodeURIComponent(sessionToken)}`,
+      pollUrlFn: () => `/api/audience/poll?slug=${encodeURIComponent(cfg.eventSlug)}&token=${encodeURIComponent(sessionToken)}&_=${Date.now()}`,
       onState: handleServerState,
       onError: (err) => {
         if (err && err.status === 404) {

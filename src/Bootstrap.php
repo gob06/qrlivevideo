@@ -76,6 +76,17 @@ class Bootstrap
         return $sub === '' ? $base : $base . '/' . ltrim($sub, '/');
     }
 
+    public static function assetVersion(): string
+    {
+        static $ver = null;
+        if ($ver !== null) {
+            return $ver;
+        }
+        $mtime = @filemtime(self::rootPath('public/assets/js/wall.js'));
+        $ver = self::env('APP_VERSION', '1.0.0') . ($mtime ? '.' . $mtime : '');
+        return $ver;
+    }
+
     public static function sendSecurityHeaders(bool $allowIframeSameOrigin = true): void
     {
         header('X-Content-Type-Options: nosniff');
@@ -155,7 +166,7 @@ class Bootstrap
             return [];
         }
         $ttl = max(60, min(86400, (int)self::env('CLOUDFLARE_TURN_TTL', '86400')));
-        $cachePath = ROOT_PATH . '/storage/cf_turn_cache.json';
+        $cachePath = self::rootPath('storage/cf_turn_cache.json');
         $cacheKey = hash('sha256', $keyId . ':' . $ttl);
 
         if (is_file($cachePath)) {

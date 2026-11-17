@@ -257,10 +257,6 @@ async function handleWallState(state) {
   el.blackout.hidden = !state.blackout;
   wallAudioEnabled = resolveAudioEnabled(state.audio_enabled);
 
-  if (state.qr) {
-    await syncQrRendering(state.qr);
-  }
-
   const maxFeeds = Math.max(1, Math.min(4, state.max_wall_feeds || 4));
   activeSlots = (state.slots || []).slice(0, maxFeeds);
   const activeIds = new Set(activeSlots.map((s) => s.participant_id));
@@ -285,6 +281,7 @@ async function handleWallState(state) {
     }
   }
 
+  // Toggle idle QR vs live grid FIRST so QR/logo rendering never blocks live feed visibility
   const hasLive = activeSlots.length > 0;
   if (!hasLive) {
     el.grid.hidden = true;
@@ -309,8 +306,20 @@ async function handleWallState(state) {
     el.qrCorner.hidden = !(cfg.qrMode === 'corner' || cfg.qrMode === 'on');
   }
 
+  if (state.qr && (!hasLive || cfg.qrMode === 'corner' || cfg.qrMode === 'on')) {
+    try {
+      await syncQrRendering(state.qr);
+    } catch {
+      // Keep live stage responsive even if branded QR rendering fails
+    }
+  }
+
   for (const sig of state.signals || []) {
-    await handleSignal(sig);
+    try {
+      await handleSignal(sig);
+    } catch {
+      // Ignore stale or malformed signaling message so subsequent messages still process
+    }
   }
 
   // If wall opened or reloaded after participant was already on-air, request fresh offer
@@ -318,7 +327,7 @@ async function handleWallState(state) {
   for (const slot of activeSlots) {
     const pid = slot.participant_id;
     const seenForMs = now - (slotSeenAt.get(pid) || now);
-    if (!peers.has(pid) && seenForMs > 2200) {
+    if (!peers.has(pid) && seenForMs > 1200) {
       requestRenegotiation(pid);
     }
   }
@@ -347,11 +356,23 @@ function buildParams() {
   return `slug=${encodeURIComponent(cfg.eventSlug)}&key=${encodeURIComponent(cfg.wallKey)}&viewer_id=${encodeURIComponent(cfg.viewerId)}&is_primary=${cfg.isMonitor ? '0' : '1'}&resolution=${encodeURIComponent(res)}&version=${encodeURIComponent(cfg.version || '1.0.0')}`;
 }
 
-startAdaptiveTransport({
+const stopTransport = startAdaptiveTransport({
   mode: cfg.signalingMode,
   sseUrlFn: () => `/api/wall/stream?${buildParams()}`,
-  pollUrlFn: () => `/api/wall/poll?${buildParams()}`,
+  pollUrlFn: () => `/api/wall/poll?${buildParams()}&_=${Date.now()}`,
   onState: handleWallState,
   onError: () => {},
   getIntervalMs: () => (activeSlots.length > 0 || peers.size > 0 ? (cfg.pollFastMs || 700) : (cfg.pollIdleMs || 2000)),
+});
+
+window.addEventListener('message', (ev) => {
+  if (ev.origin === window.location.origin && ev.data && ev.data.type === 'qrlw_poll_now') {
+    stopTransport.trigger();
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    stopTransport.trigger();
+  }
 });

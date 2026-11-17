@@ -39,10 +39,11 @@ const CONFIG = {
   adminPollMs: 1500,
   thumbIntervalMs: 3000,
   wallOfflineThresholdSec: 10,
-  participantStaleSec: 30,
+  participantStaleSec: 120,
   signalTtlSec: 60,
   statsTtlSec: 120,
 };
+const ASSET_VER = String(Date.now());
 
 function isValidIceUrl(url: string): boolean {
   return /^(stuns?|turns?):[a-z0-9.\[\]-]+(:\d+)?(\?[^\s]*)?$/i.test(url.trim());
@@ -740,7 +741,21 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-app.use('/assets', express.static(path.join(PUBLIC_DIR, 'assets')));
+app.use('/api', (_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+app.use(
+  '/assets',
+  express.static(path.join(PUBLIC_DIR, 'assets'), {
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    },
+  })
+);
 app.use('/uploads', express.static(path.join(PUBLIC_DIR, 'uploads')));
 
 const upload = multer({
@@ -825,14 +840,15 @@ app.get('/join/:slug', async (req, res) => {
     pollFastMs: CONFIG.pollFastMs,
     thumbIntervalMs: CONFIG.thumbIntervalMs,
   };
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.type('html').send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>${esc(config.eventTitle)} — Join Live Wall</title>
-  <link rel="stylesheet" href="/assets/css/common.css">
-  <link rel="stylesheet" href="/assets/css/audience.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=${ASSET_VER}">
+  <link rel="stylesheet" href="/assets/css/audience.css?v=${ASSET_VER}">
 </head>
 <body class="aud-body">
   <script id="app-config" type="application/json">${safeJsonScript(config)}</script>
@@ -878,7 +894,7 @@ app.get('/join/:slug', async (req, res) => {
       <button type="button" class="btn btn-primary btn-lg" id="aud-rejoin-btn">Return to Join Screen</button>
     </section>
   </main>
-  <script type="module" src="/assets/js/audience.js"></script>
+  <script type="module" src="/assets/js/audience.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
 });
@@ -918,13 +934,14 @@ app.get('/wall/:slug', async (req, res) => {
     pollIdleMs: CONFIG.pollIdleMs,
     pollFastMs: CONFIG.pollFastMs,
   };
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.type('html').send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(config.eventTitle)} — Wall</title>
-  <link rel="stylesheet" href="/assets/css/wall.css">
+  <link rel="stylesheet" href="/assets/css/wall.css?v=${ASSET_VER}">
 </head>
 <body class="wall-body wall-bg-${esc(bg)}">
   <script id="app-config" type="application/json">${safeJsonScript(config)}</script>
@@ -943,7 +960,7 @@ app.get('/wall/:slug', async (req, res) => {
     </aside>
     <div class="wall-blackout" id="wall-blackout" hidden></div>
   </main>
-  <script type="module" src="/assets/js/wall.js"></script>
+  <script type="module" src="/assets/js/wall.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
 });
@@ -1177,12 +1194,13 @@ async function renderAdminShell(req: Request, res: Response) {
     iceServers: await getIceServersAsync(),
     adminPollMs: CONFIG.adminPollMs,
   };
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.type('html').send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>QR Live Wall — Admin Console</title>
-  <link rel="stylesheet" href="/assets/css/common.css"><link rel="stylesheet" href="/assets/css/admin.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=${ASSET_VER}"><link rel="stylesheet" href="/assets/css/admin.css?v=${ASSET_VER}">
 </head>
 <body class="adm-body">
   <script id="app-config" type="application/json">${safeJsonScript(appConfig)}</script>
@@ -1210,7 +1228,7 @@ async function renderAdminShell(req: Request, res: Response) {
   </div>
   <div class="adm-modal-backdrop" id="adm-modal-backdrop" hidden><div class="adm-modal" id="adm-modal" role="dialog" aria-modal="true"></div></div>
   <div class="adm-toast-stack" id="adm-toast-stack" aria-live="polite"></div>
-  <script type="module" src="/assets/js/admin.js"></script>
+  <script type="module" src="/assets/js/admin.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
 }
@@ -1242,7 +1260,7 @@ function buildAudienceState(p: Record<string, unknown>) {
   const targets: string[] = [];
   if (effectiveStatus === 'onair' && slot) {
     const viewers = dbAll<{ viewer_id: string }>(
-      'SELECT viewer_id FROM wall_heartbeats WHERE event_id = ? AND last_seen >= ? ORDER BY is_primary DESC, last_seen DESC LIMIT 3',
+      'SELECT viewer_id FROM wall_heartbeats WHERE event_id = ? AND last_seen >= ? ORDER BY is_primary DESC, last_seen DESC LIMIT 8',
       eid,
       utcNow(-15)
     );

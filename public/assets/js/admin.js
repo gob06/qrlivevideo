@@ -53,6 +53,17 @@ function normalizeEventUrls(data) {
   return data;
 }
 
+function buildMonitorWallSrc(ev, tag) {
+  const uid = Math.random().toString(36).slice(2, 8);
+  return `/wall/${encodeURIComponent(ev.slug)}?key=${encodeURIComponent(ev.wall_key)}&monitor=1&mid=${encodeURIComponent(`${tag}_${cfg.user.id}_${uid}`)}`;
+}
+
+function pokeWallIframe(iframeEl) {
+  try {
+    iframeEl?.contentWindow?.postMessage({ type: 'qrlw_poll_now' }, window.location.origin);
+  } catch {}
+}
+
 function toast(msg) {
   const div = document.createElement('div');
   div.className = 'adm-toast';
@@ -526,7 +537,7 @@ async function renderEventStudioView(eventId) {
             <span class="page-meta" id="st-obs-status">Checking OBS...</span>
           </div>
           <div class="wall-frame-wrap" id="st-wall-wrap">
-            <iframe id="st-wall-iframe" src="${esc(initial.wallUrl)}&monitor=1&mid=studio_${cfg.user.id}"></iframe>
+            <iframe id="st-wall-iframe" src="${esc(buildMonitorWallSrc(initial.event, 'studio'))}"></iframe>
           </div>
         </section>
 
@@ -688,6 +699,7 @@ async function renderEventStudioView(eventId) {
     try {
       const res = await api(`/api/admin/events/${eventId}/wall-action`, { method: 'POST', json: payload });
       if (res.summary) toast(res.summary);
+      pokeWallIframe(wallIframe);
       await refreshState();
     } catch (err) {
       toast(err.message);
@@ -948,7 +960,7 @@ async function renderEventStudioView(eventId) {
       });
       toast('Wall key regenerated — update your OBS Browser Source URL');
       await refreshState();
-      wallIframe.src = `${lastStateData.wallUrl}&monitor=1&mid=studio_${cfg.user.id}`;
+      wallIframe.src = buildMonitorWallSrc(lastStateData.event, 'studio');
     });
 
     if (isSuper) {
@@ -1106,6 +1118,7 @@ async function renderEventStudioView(eventId) {
     grid.querySelectorAll('.p-mute').forEach((b) => {
       b.addEventListener('click', async () => {
         await api(`/api/admin/events/${eventId}/participant-action`, { method: 'POST', json: { action: 'mute_toggle', participant_id: Number(b.dataset.pid) } });
+        pokeWallIframe(wallIframe);
         refreshState();
       });
     });
@@ -1113,6 +1126,7 @@ async function renderEventStudioView(eventId) {
       b.addEventListener('click', async () => {
         await api(`/api/admin/events/${eventId}/participant-action`, { method: 'POST', json: { action: 'kick', participant_id: Number(b.dataset.pid) } });
         toast('Participant kicked');
+        pokeWallIframe(wallIframe);
         refreshState();
       });
     });
@@ -1120,6 +1134,7 @@ async function renderEventStudioView(eventId) {
       b.addEventListener('click', async () => {
         await api(`/api/admin/events/${eventId}/participant-action`, { method: 'POST', json: { action: 'ban', participant_id: Number(b.dataset.pid), reason: 'Banned by moderator' } });
         toast('Participant banned');
+        pokeWallIframe(wallIframe);
         refreshState();
       });
     });
@@ -1295,10 +1310,13 @@ async function renderMonitorView(eventId) {
       <section class="panel">
         <div class="panel-head">
           <h2 class="panel-title">Program / Wall Output</h2>
-          <span id="mon-pgm-badge" style="font-size:13px;font-weight:800;">IDLE (QR SHOWING)</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span id="mon-pgm-badge" style="font-size:13px;font-weight:800;">IDLE (QR SHOWING)</span>
+            <button type="button" class="btn btn-ghost btn-sm" id="mon-refresh-wall-btn" title="Reload program output preview">Refresh</button>
+          </div>
         </div>
         <div class="wall-frame-wrap" id="mon-wall-wrap">
-          <iframe src="${esc(initial.wallUrl)}&monitor=1&mid=mon_${cfg.user.id}"></iframe>
+          <iframe id="mon-wall-iframe" src="${esc(buildMonitorWallSrc(initial.event, 'mon'))}"></iframe>
         </div>
       </section>
 
@@ -1359,13 +1377,21 @@ async function renderMonitorView(eventId) {
   `;
 
   const wallWrap = document.getElementById('mon-wall-wrap');
-  const wallIframe = wallWrap.querySelector('iframe');
+  const wallIframe = document.getElementById('mon-wall-iframe');
+  let monitorWallKey = String(initial.event.wall_key || '');
+  let lastMonOnairCount = Number(initial.counters.onair || 0);
   const syncMonScale = () => {
     const scale = wallWrap.clientWidth / 1920;
     if (scale > 0) wallIframe.style.transform = `scale(${scale})`;
   };
   new ResizeObserver(syncMonScale).observe(wallWrap);
   requestAnimationFrame(syncMonScale);
+
+  document.getElementById('mon-refresh-wall-btn').addEventListener('click', () => {
+    const ev = lastStateData?.event || initial.event;
+    wallIframe.src = buildMonitorWallSrc(ev, 'mon');
+    toast('Program output refreshed');
+  });
 
   document.getElementById('mon-chime-btn').addEventListener('click', (e) => {
     soundAlertsEnabled = !soundAlertsEnabled;
@@ -1396,6 +1422,7 @@ async function renderMonitorView(eventId) {
     pvListenBtn.disabled = true;
     pvLabel.textContent = 'Sent to wall';
     await api(`/api/admin/events/${eventId}/wall-action`, { method: 'POST', json: { action: 'preview_take', participant_id: pid } });
+    pokeWallIframe(wallIframe);
     toast('Candidate taken live to wall');
     await refreshMon();
   });
@@ -1429,6 +1456,13 @@ async function renderMonitorView(eventId) {
     lastStateData = data;
     const c = data.counters;
     baseDurationSec = Number(c.duration_sec || 0);
+    if (data.event.wall_key && String(data.event.wall_key) !== monitorWallKey) {
+      monitorWallKey = String(data.event.wall_key);
+      wallIframe.src = buildMonitorWallSrc(data.event, 'mon');
+    } else if (Number(c.onair || 0) !== lastMonOnairCount) {
+      pokeWallIframe(wallIframe);
+    }
+    lastMonOnairCount = Number(c.onair || 0);
     document.getElementById('kpi-joined').textContent = String(c.total_joined);
     document.getElementById('kpi-waiting').textContent = String(c.waiting);
     document.getElementById('kpi-onair').textContent = String(c.onair);
@@ -1528,6 +1562,7 @@ async function renderMonitorView(eventId) {
       healthList.querySelectorAll('.h-remove').forEach((b) => {
         b.addEventListener('click', async () => {
           await api(`/api/admin/events/${eventId}/wall-action`, { method: 'POST', json: { action: 'remove_from_wall', participant_id: Number(b.dataset.pid) } });
+          pokeWallIframe(wallIframe);
           refreshMon();
         });
       });
@@ -1570,6 +1605,7 @@ async function renderMonitorView(eventId) {
     candEl.querySelectorAll('.c-air').forEach((b) => {
       b.addEventListener('click', async () => {
         await api(`/api/admin/events/${eventId}/wall-action`, { method: 'POST', json: { action: 'put_on_wall', participant_id: Number(b.dataset.pid) } });
+        pokeWallIframe(wallIframe);
         refreshMon();
       });
     });

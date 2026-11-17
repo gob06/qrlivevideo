@@ -125,10 +125,21 @@ export function startAdaptiveTransport({ mode, sseUrlFn, pollUrlFn, onState, onE
   let stopped = false;
   let es = null;
   let timer = null;
+  let inFlight = false;
+  let queuedTrigger = false;
   let usePoll = mode !== 'auto' || typeof EventSource === 'undefined';
 
   async function doPoll() {
     if (stopped) return;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (inFlight) {
+      queuedTrigger = true;
+      return;
+    }
+    inFlight = true;
     try {
       const resp = await fetch(pollUrlFn(), { cache: 'no-store' });
       if (!resp.ok) {
@@ -141,8 +152,14 @@ export function startAdaptiveTransport({ mode, sseUrlFn, pollUrlFn, onState, onE
     } catch (err) {
       if (onError) onError(err);
     } finally {
+      inFlight = false;
       if (!stopped) {
-        timer = setTimeout(doPoll, getIntervalMs());
+        if (queuedTrigger) {
+          queuedTrigger = false;
+          timer = setTimeout(doPoll, 40);
+        } else {
+          timer = setTimeout(doPoll, getIntervalMs());
+        }
       }
     }
   }
@@ -193,9 +210,15 @@ export function startAdaptiveTransport({ mode, sseUrlFn, pollUrlFn, onState, onE
     startSse();
   }
 
-  return () => {
+  const stop = () => {
     stopped = true;
     if (es) es.close();
     if (timer) clearTimeout(timer);
   };
+  stop.trigger = () => {
+    if (!stopped && usePoll) {
+      doPoll();
+    }
+  };
+  return stop;
 }

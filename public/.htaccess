@@ -1,6 +1,9 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
+    # Allow Let's Encrypt / cPanel AutoSSL validation
+    RewriteRule ^\.well-known/ - [L]
+
     # Deny access to dotfiles
     RewriteRule (^\.|/\.) - [F,L]
 

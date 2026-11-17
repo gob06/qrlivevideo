@@ -7,8 +7,8 @@ use function App\e;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>QR Live Wall — Admin Console</title>
-  <link rel="stylesheet" href="/assets/css/common.css">
-  <link rel="stylesheet" href="/assets/css/admin.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
+  <link rel="stylesheet" href="/assets/css/admin.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="adm-body">
   <script id="app-config" type="application/json"><?= json_encode($appConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
@@ -47,6 +47,6 @@ use function App\e;
 
   <div class="adm-toast-stack" id="adm-toast-stack" aria-live="polite"></div>
 
-  <script type="module" src="/assets/js/admin.js"></script>
+  <script type="module" src="/assets/js/admin.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
 </body>
 </html>

@@ -12,7 +12,7 @@ return [
     'admin_poll_ms' => 1500,
     'thumbnail_interval_ms' => 3000,
     'wall_offline_threshold_sec' => 10,
-    'participant_stale_sec' => 30,
+    'participant_stale_sec' => 120,
     'signal_ttl_sec' => 60,
     'stats_ttl_sec' => 120,
     'cleanup_probability' => 8, // ~8% of poll/api requests run light GC

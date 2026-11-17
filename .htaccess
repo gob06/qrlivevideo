@@ -1,16 +1,25 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
-    # Block direct access to sensitive files and directories
-    RewriteRule ^(\.env|composer\.(json|lock)|schema\.(sqlite|mariadb)\.sql|router\.php|cron_cleanup\.php) - [F,L]
-    RewriteRule ^(src|config|views|storage)(/|$) - [F,L]
+    # Allow Let's Encrypt / cPanel AutoSSL validation
+    RewriteRule ^\.well-known/ - [L]
+
+    # Block dotfiles/directories (.env, .git, .gitignore, .cpanel.yml, etc.)
+    RewriteRule (^\.|/\.) - [F,L]
+
+    # Block direct access to internal, dev, and sensitive files/directories
+    RewriteRule ^(composer\.(json|lock)|package(-lock)?\.json|bun\.lock|tsconfig\.json|vite\.config\.ts|server\.ts|metadata\.json|index\.html|README\.md|schema\.(sqlite|mariadb)\.sql|router\.php|cron_cleanup\.php|database\.sqlite.*)$ - [F,L]
+    RewriteRule ^(src|config|views|storage|node_modules|dist)(/|$) - [F,L]
+
+    # Allow one-time installer directly (it self-locks via storage/install.lock)
+    RewriteRule ^install\.php$ - [L]
 
     # Route everything else into public/ if document root points to project root
     RewriteCond %{REQUEST_URI} !^/public/
     RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>
 
-<FilesMatch "\.(env|sqlite|sqlite3|db|sql|log)$">
+<FilesMatch "\.(env|sqlite|sqlite3|db|sql|log|ts|tsx|md|yml|yaml|lock)$">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

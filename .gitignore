@@ -8,6 +8,8 @@ coverage/
 !.env.example
 *.sqlite*
 storage/install.lock
+storage/cf_turn_cache.json
+storage/logs/*
+!storage/logs/.gitkeep
 public/uploads/logos/*
 !public/uploads/logos/.htaccess
-

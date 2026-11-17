@@ -306,7 +306,7 @@ class AudienceApiController
         if ($effectiveStatus === 'onair' && $slot !== null) {
             $cutoff = utcNow(-15);
             $viewers = Database::fetchAll(
-                'SELECT viewer_id FROM wall_heartbeats WHERE event_id = ? AND last_seen >= ? ORDER BY is_primary DESC, last_seen DESC LIMIT 3',
+                'SELECT viewer_id FROM wall_heartbeats WHERE event_id = ? AND last_seen >= ? ORDER BY is_primary DESC, last_seen DESC LIMIT 8',
                 [$eid, $cutoff]
             );
             foreach ($viewers as $v) {

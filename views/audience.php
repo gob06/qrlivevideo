@@ -7,8 +7,8 @@ use function App\e;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title><?= e($config['eventTitle']) ?> — Join Live Wall</title>
-  <link rel="stylesheet" href="/assets/css/common.css">
-  <link rel="stylesheet" href="/assets/css/audience.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
+  <link rel="stylesheet" href="/assets/css/audience.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="aud-body">
   <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
@@ -84,6 +84,6 @@ use function App\e;
     </section>
   </main>
 
-  <script type="module" src="/assets/js/audience.js"></script>
+  <script type="module" src="/assets/js/audience.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
 </body>
 </html>

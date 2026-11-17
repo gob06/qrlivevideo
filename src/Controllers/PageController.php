@@ -32,6 +32,8 @@ class PageController
             'pollFastMs' => Bootstrap::$config['poll_interval_fast_ms'],
             'thumbIntervalMs' => Bootstrap::$config['thumbnail_interval_ms'],
         ];
+        header('Cache-Control: no-store, no-cache, must-revalidate, private');
+        header('Pragma: no-cache');
         require Bootstrap::rootPath('views/audience.php');
     }
 
@@ -83,6 +85,8 @@ class PageController
             'pollIdleMs' => Bootstrap::$config['poll_interval_idle_ms'],
             'pollFastMs' => Bootstrap::$config['poll_interval_fast_ms'],
         ];
+        header('Cache-Control: no-store, no-cache, must-revalidate, private');
+        header('Pragma: no-cache');
         require Bootstrap::rootPath('views/wall.php');
     }
 
@@ -201,6 +205,8 @@ class PageController
             'iceServers' => Bootstrap::iceServersConfig(),
             'adminPollMs' => Bootstrap::$config['admin_poll_ms'],
         ];
+        header('Cache-Control: no-store, no-cache, must-revalidate, private');
+        header('Pragma: no-cache');
         require Bootstrap::rootPath('views/admin_app.php');
     }
 
