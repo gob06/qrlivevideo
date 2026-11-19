@@ -1,4 +1,4 @@
-import { encodeQR, decodeQRFromImageData } from './qr-engine.js';
+import { encodeQR, decodeQRFromImageData } from './qr-engine.js?v=20261119';
 
 export function hexLuminance(hex) {
   const clean = (hex || '#000000').replace('#', '');

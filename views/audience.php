@@ -11,7 +11,7 @@ use function App\e;
   <link rel="stylesheet" href="/assets/css/audience.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="aud-body">
-  <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+  <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE) ?></script>
 
   <main class="aud-shell">
     <header class="aud-header">

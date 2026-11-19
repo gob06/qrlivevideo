@@ -1410,7 +1410,7 @@ async function renderAdminShell(req: Request, res: Response) {
   </div>
   <div class="adm-modal-backdrop" id="adm-modal-backdrop" hidden><div class="adm-modal" id="adm-modal" role="dialog" aria-modal="true"></div></div>
   <div class="adm-toast-stack" id="adm-toast-stack" aria-live="polite"></div>
-  <script type="module" src="/assets/js/admin.js?v=${ASSET_VER}"></script>
+  <script type="module" src="/assets/js/admin-boot.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
 }

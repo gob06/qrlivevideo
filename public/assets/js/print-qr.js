@@ -1,4 +1,4 @@
-import { renderBrandedQR, renderBrandedQRSvg, downloadBlob } from './qr-brand.js';
+import { renderBrandedQR, renderBrandedQRSvg, downloadBlob } from './qr-brand.js?v=20261119';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const canvas = document.getElementById('print-qr-canvas');

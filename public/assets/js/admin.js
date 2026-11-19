@@ -1,6 +1,6 @@
-import { renderBrandedQR, renderBrandedQRSvg, checkQrSafety, testScanCanvas, downloadBlob } from './qr-brand.js';
-import { sanitizeIceServers, formatAspectLabel, computeVideoFrameMetrics } from './webrtc-common.js';
-import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js';
+import { renderBrandedQR, renderBrandedQRSvg, checkQrSafety, testScanCanvas, downloadBlob } from './qr-brand.js?v=20261119';
+import { sanitizeIceServers, formatAspectLabel, computeVideoFrameMetrics } from './webrtc-common.js?v=20261119';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261119';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const mainEl = document.getElementById('adm-main');

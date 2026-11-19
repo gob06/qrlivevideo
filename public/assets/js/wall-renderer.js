@@ -1,4 +1,4 @@
-import { computeVideoFrameMetrics } from './webrtc-common.js';
+import { computeVideoFrameMetrics } from './webrtc-common.js?v=20261119';
 
 export function normalizeFitMode(raw, fallback = 'fit') {
   const v = String(raw || '').toLowerCase();

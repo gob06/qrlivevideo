@@ -11,7 +11,7 @@ $bgClass = 'wall-bg-' . $config['bg'];
   <link rel="stylesheet" href="/assets/css/wall.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="wall-body <?= e($bgClass) ?>">
-  <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+  <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE) ?></script>
 
   <main class="wall-stage" id="wall-stage">
     <!-- Idle QR view -->

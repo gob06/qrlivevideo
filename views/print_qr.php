@@ -25,7 +25,7 @@ use function App\e;
   </style>
 </head>
 <body>
-  <script id="app-config" type="application/json"><?= json_encode($printConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+  <script id="app-config" type="application/json"><?= json_encode($printConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE) ?></script>
   <div class="print-toolbar">
     <strong>Printable QR Poster</strong>
     <div class="print-toolbar-actions">

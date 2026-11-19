@@ -6,7 +6,7 @@ import {
   preferVideoCodecs,
   sanitizeIceServers,
   startAdaptiveTransport,
-} from './webrtc-common.js';
+} from './webrtc-common.js?v=20261119';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const storageKey = `qrlw_aud_${cfg.eventSlug}`;

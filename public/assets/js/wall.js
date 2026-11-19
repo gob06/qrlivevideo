@@ -1,6 +1,6 @@
-import { renderBrandedQR } from './qr-brand.js';
-import { collectPeerStats, sanitizeIceServers, startAdaptiveTransport } from './webrtc-common.js';
-import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js';
+import { renderBrandedQR } from './qr-brand.js?v=20261119';
+import { collectPeerStats, sanitizeIceServers, startAdaptiveTransport } from './webrtc-common.js?v=20261119';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261119';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const urlParams = new URLSearchParams(window.location.search);

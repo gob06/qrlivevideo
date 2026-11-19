@@ -11,7 +11,7 @@ use function App\e;
   <link rel="stylesheet" href="/assets/css/admin.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="adm-body">
-  <script id="app-config" type="application/json"><?= json_encode($appConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+  <script id="app-config" type="application/json"><?= json_encode($appConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE) ?></script>
 
   <div class="adm-shell">
     <header class="adm-topbar">
@@ -48,6 +48,6 @@ use function App\e;
 
   <div class="adm-toast-stack" id="adm-toast-stack" aria-live="polite"></div>
 
-  <script type="module" src="/assets/js/admin.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
+  <script type="module" src="/assets/js/admin-boot.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
 </body>
 </html>
