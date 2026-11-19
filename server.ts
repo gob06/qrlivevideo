@@ -275,7 +275,7 @@ async function fetchCloudflareIceServers(): Promise<IceServerEntry[]> {
         cfIceCache.failUntil = Date.now() + (isClientErr ? 300_000 : 30_000);
         if (cfIceCache.loggedFailKey !== cacheKey) {
           cfIceCache.loggedFailKey = cacheKey;
-          console.warn(`[CF TURN] ${cfIceCache.lastError}`);
+          console.info(`[CF TURN] Fallback to STUN (${cfIceCache.lastError})`);
         }
       }
       return cfIceCache.servers;

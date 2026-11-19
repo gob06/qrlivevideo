@@ -256,6 +256,7 @@ async function handleWallState(state) {
   }
   for (const [pid, tile] of Array.from(tiles.entries())) {
     if (!activeIds.has(pid)) {
+      tile.destroy?.();
       tile.root.remove();
       tiles.delete(pid);
     }

@@ -7,7 +7,7 @@ use function App\e;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Print QR — <?= e($printConfig['title']) ?></title>
-  <link rel="stylesheet" href="/assets/css/common.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
   <style>
     body { background: #f8fafc; color: #0f172a; margin: 0; font-family: var(--font-sans); }
     .print-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 24px; background: #0f172a; color: #f8fafc; }
@@ -40,6 +40,6 @@ use function App\e;
     <canvas id="print-qr-canvas" width="1024" height="1024"></canvas>
     <div class="url"><?= e($printConfig['joinUrl']) ?></div>
   </main>
-  <script type="module" src="/assets/js/print-qr.js"></script>
+  <script type="module" src="/assets/js/print-qr.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
 </body>
 </html>

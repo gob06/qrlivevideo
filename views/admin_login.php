@@ -7,8 +7,8 @@ use function App\e;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>QR Live Wall — Host Sign In</title>
-  <link rel="stylesheet" href="/assets/css/common.css">
-  <link rel="stylesheet" href="/assets/css/admin.css">
+  <link rel="stylesheet" href="/assets/css/common.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
+  <link rel="stylesheet" href="/assets/css/admin.css?v=<?= e(\App\Bootstrap::assetVersion()) ?>">
 </head>
 <body class="adm-auth-body">
   <main class="adm-auth-card">

@@ -83,6 +83,7 @@ export function createWallTile({ onMetricsChange } = {}) {
   };
 
   function syncOverlayMetrics() {
+    if (state.destroyed) return null;
     const metrics = computeVideoFrameMetrics(video, root, state.fitMode);
     if (state.frameCheck) {
       frameOverlay.hidden = false;
@@ -105,7 +106,7 @@ export function createWallTile({ onMetricsChange } = {}) {
     } else {
       frameOverlay.hidden = true;
     }
-    if (onMetricsChange) onMetricsChange(metrics, state);
+    if (onMetricsChange && root.isConnected) onMetricsChange(metrics, state);
     return metrics;
   }
 
@@ -120,12 +121,24 @@ export function createWallTile({ onMetricsChange } = {}) {
     syncOverlayMetrics();
   });
 
+  state.destroyed = false;
+  let ro = null;
   if (typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => syncOverlayMetrics());
+    ro = new ResizeObserver(() => {
+      if (state.destroyed || !root.isConnected) return;
+      syncOverlayMetrics();
+    });
     ro.observe(root);
   }
 
   state.syncOverlayMetrics = syncOverlayMetrics;
+  state.destroy = () => {
+    state.destroyed = true;
+    if (ro) {
+      ro.disconnect();
+      ro = null;
+    }
+  };
   return state;
 }
 

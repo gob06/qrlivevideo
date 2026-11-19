@@ -82,8 +82,18 @@ class Bootstrap
         if ($ver !== null) {
             return $ver;
         }
-        $mtime = @filemtime(self::rootPath('public/assets/js/wall.js'));
-        $ver = self::env('APP_VERSION', '1.0.0') . ($mtime ? '.' . $mtime : '');
+        $latest = 0;
+        $files = array_merge(
+            glob(self::rootPath('public/assets/js/*.js')) ?: [],
+            glob(self::rootPath('public/assets/css/*.css')) ?: []
+        );
+        foreach ($files as $f) {
+            $mt = @filemtime($f);
+            if ($mt && $mt > $latest) {
+                $latest = $mt;
+            }
+        }
+        $ver = self::env('APP_VERSION', '1.0.0') . ($latest ? '.' . $latest : '');
         return $ver;
     }
 

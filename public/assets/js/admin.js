@@ -865,6 +865,10 @@ async function renderEventStudioView(eventId) {
   const wallWrap = document.getElementById('st-wall-wrap');
   const wallIframe = document.getElementById('st-wall-iframe');
   const syncWallScale = () => {
+    if (!wallWrap.isConnected) {
+      ro.disconnect();
+      return;
+    }
     const scale = wallWrap.clientWidth / 1920;
     if (scale > 0) wallIframe.style.transform = `scale(${scale})`;
   };
@@ -1751,10 +1755,15 @@ async function renderMonitorView(eventId) {
   let monitorWallKey = String(initial.event.wall_key || '');
   let lastMonOnairCount = Number(initial.counters.onair || 0);
   const syncMonScale = () => {
+    if (!wallWrap.isConnected) {
+      monRo.disconnect();
+      return;
+    }
     const scale = wallWrap.clientWidth / 1920;
     if (scale > 0) wallIframe.style.transform = `scale(${scale})`;
   };
-  new ResizeObserver(syncMonScale).observe(wallWrap);
+  const monRo = new ResizeObserver(syncMonScale);
+  monRo.observe(wallWrap);
   requestAnimationFrame(syncMonScale);
 
   document.getElementById('mon-refresh-wall-btn').addEventListener('click', () => {
@@ -2725,28 +2734,41 @@ async function renderFrameCheckView() {
   }
 
   function updateMetricsCards(metrics, capInfo) {
+    if (!gridEl.isConnected) return;
+    const capEl = document.getElementById('fc-m-cap');
+    const streamEl = document.getElementById('fc-m-stream');
+    const arEl = document.getElementById('fc-m-ar');
+    const zoomEl = document.getElementById('fc-m-zoom');
+    const tileEl = document.getElementById('fc-m-tile');
+    const visEl = document.getElementById('fc-m-vis');
+    if (!capEl || !streamEl || !arEl || !zoomEl) return;
+
     const cap = capInfo || localCaptureInfo || remoteParticipant?.capture_settings || {};
     const cw = Number(cap.width || metrics?.videoWidth || 0);
     const ch = Number(cap.height || metrics?.videoHeight || 0);
-    document.getElementById('fc-m-cap').textContent = cw && ch ? `${cw}×${ch}` : '—';
-    document.getElementById('fc-m-stream').textContent = metrics?.videoWidth ? `${metrics.videoWidth}×${metrics.videoHeight}` : '—';
-    document.getElementById('fc-m-ar').textContent = metrics?.aspectLabel || (cw && ch ? formatAspectLabel(cw, ch) : '—');
-    document.getElementById('fc-m-zoom').textContent = typeof cap.zoom === 'number' ? `${cap.zoom.toFixed(2).replace(/\.?0+$/, '')}x` : 'N/A';
+    capEl.textContent = cw && ch ? `${cw}×${ch}` : '—';
+    streamEl.textContent = metrics?.videoWidth ? `${metrics.videoWidth}×${metrics.videoHeight}` : '—';
+    arEl.textContent = metrics?.aspectLabel || (cw && ch ? formatAspectLabel(cw, ch) : '—');
+    zoomEl.textContent = typeof cap.zoom === 'number' ? `${cap.zoom.toFixed(2).replace(/\.?0+$/, '')}x` : 'N/A';
 
     if (metrics && metrics.tileWidth > 0 && gridEl.clientWidth > 0) {
       const obsScale = 1920 / gridEl.clientWidth;
       const obsW = Math.round(metrics.tileWidth * obsScale);
       const obsH = Math.round(metrics.tileHeight * obsScale);
-      document.getElementById('fc-m-tile').textContent = `${metrics.tileWidth}×${metrics.tileHeight} (OBS ${obsW}×${obsH})`;
-      const visEl = document.getElementById('fc-m-vis');
-      visEl.textContent = metrics.croppedPct > 0.5
-        ? `${metrics.visiblePct}% (Cropped ${metrics.croppedPct}%)`
-        : `${metrics.visiblePct}% (No crop)`;
-      visEl.className = `fc-metric-val tabular ${metrics.croppedPct > 0.5 ? 'status-text-amber' : 'status-text-green'}`;
+      if (tileEl) {
+        tileEl.textContent = `${metrics.tileWidth}×${metrics.tileHeight} (OBS ${obsW}×${obsH})`;
+      }
+      if (visEl) {
+        visEl.textContent = metrics.croppedPct > 0.5
+          ? `${metrics.visiblePct}% (Cropped ${metrics.croppedPct}%)`
+          : `${metrics.visiblePct}% (No crop)`;
+        visEl.className = `fc-metric-val tabular ${metrics.croppedPct > 0.5 ? 'status-text-amber' : 'status-text-green'}`;
+      }
     }
   }
 
   function rebuildTiles() {
+    stageTiles.forEach((t) => t.destroy?.());
     const layout = layoutSel.value;
     gridEl.className = `wall-grid layout-${layout}`;
     const count = layout === 'single' ? 1 : (layout === 'split2' ? 2 : 4);
@@ -2980,6 +3002,8 @@ async function renderFrameCheckView() {
   }
 
   frameCheckCleanup = () => {
+    stageTiles.forEach((t) => t.destroy?.());
+    stageTiles = [];
     stopLocalCamera();
     activeEventId = null;
   };
