@@ -1,8 +1,6 @@
 import {
   applyVideoSenderParameters,
   collectPeerStats,
-  computeVideoFrameMetrics,
-  formatAspectLabel,
   preferVideoCodecs,
   sanitizeIceServers,
   startAdaptiveTransport,
@@ -32,16 +30,6 @@ const el = {
   videoWrap: document.getElementById('aud-video-wrap') || document.querySelector('.aud-video-wrap'),
   onairFrame: document.getElementById('aud-onair-frame'),
   previewNote: document.getElementById('aud-preview-note'),
-  cameraSelect: document.getElementById('aud-camera-select'),
-  zoomWrap: document.getElementById('aud-zoom-wrap'),
-  zoomSlider: document.getElementById('aud-zoom-slider'),
-  zoomVal: document.getElementById('aud-zoom-val'),
-  camInfoBtn: document.getElementById('aud-caminfo-btn'),
-  camInfoPanel: document.getElementById('aud-caminfo-panel'),
-  frameCheckBtn: document.getElementById('aud-framecheck-btn'),
-  frameOverlay: document.getElementById('aud-frame-overlay'),
-  frameBox: document.getElementById('aud-frame-box'),
-  frameReadout: document.getElementById('aud-frame-readout'),
   micBtn: document.getElementById('aud-mic-btn'),
   micLabel: document.getElementById('aud-mic-label'),
   flipBtn: document.getElementById('aud-flip-btn'),
@@ -64,8 +52,6 @@ let wakeLock = null;
 let wakeFallbackCanvas = null;
 let lastJoinMeta = null;
 let rejoining = false;
-let camInfoVisible = false;
-let frameCheckVisible = false;
 const peers = new Map(); // targetId -> { pc, pendingCandidates, degraded }
 const prevBytesMap = new Map();
 
@@ -152,27 +138,6 @@ async function resetZoomToWide(track) {
   }
 }
 
-function syncZoomControl(track) {
-  if (!el.zoomWrap || !el.zoomSlider || !el.zoomVal) return;
-  try {
-    const caps = track && typeof track.getCapabilities === 'function' ? track.getCapabilities() : null;
-    const settings = track && typeof track.getSettings === 'function' ? track.getSettings() : {};
-    if (caps && caps.zoom && typeof caps.zoom.min === 'number' && typeof caps.zoom.max === 'number' && caps.zoom.max > caps.zoom.min) {
-      el.zoomWrap.hidden = false;
-      el.zoomSlider.min = String(caps.zoom.min);
-      el.zoomSlider.max = String(caps.zoom.max);
-      el.zoomSlider.step = String(caps.zoom.step || 0.1);
-      const curZoom = typeof settings.zoom === 'number' ? settings.zoom : caps.zoom.min;
-      el.zoomSlider.value = String(curZoom);
-      el.zoomVal.textContent = `${Number(curZoom).toFixed(1).replace(/\.0$/, '')}x`;
-    } else {
-      el.zoomWrap.hidden = true;
-    }
-  } catch {
-    el.zoomWrap.hidden = true;
-  }
-}
-
 function syncCaptureInfo() {
   const track = localStream?.getVideoTracks?.()[0];
   if (!track) return;
@@ -210,54 +175,6 @@ function syncCaptureInfo() {
   if (el.orientHint) {
     const streamPortrait = vw && vh ? vh > vw : window.innerHeight > window.innerWidth;
     el.orientHint.hidden = !streamPortrait;
-  }
-
-  if (el.camInfoPanel) {
-    const zoomStr = currentCaptureSettings.zoom !== null ? `${currentCaptureSettings.zoom}x` : 'N/A';
-    el.camInfoPanel.innerHTML =
-      `Captured: <strong>${currentCaptureSettings.width}×${currentCaptureSettings.height}</strong> @ ${currentCaptureSettings.frameRate || '—'} fps · AR ${formatAspectLabel(currentCaptureSettings.width, currentCaptureSettings.height)}<br>` +
-      `Rendered video: ${vw}×${vh} · Facing: ${facingMode} · Zoom: ${zoomStr}` +
-      (label ? `<br>Lens: ${label}` : '');
-  }
-
-  if (frameCheckVisible && el.frameOverlay && el.frameBox && el.frameReadout && el.videoWrap) {
-    const m = computeVideoFrameMetrics(el.previewVideo, el.videoWrap, 'fit');
-    el.frameOverlay.hidden = false;
-    el.frameBox.style.left = `${m.boxLeft}px`;
-    el.frameBox.style.top = `${m.boxTop}px`;
-    el.frameBox.style.width = `${m.boxWidth}px`;
-    el.frameBox.style.height = `${m.boxHeight}px`;
-    const zoomStr = currentCaptureSettings.zoom !== null ? `${currentCaptureSettings.zoom}x` : '—';
-    el.frameReadout.textContent =
-      `Cap ${currentCaptureSettings.width}×${currentCaptureSettings.height} · AR ${m.aspectLabel} · Zoom ${zoomStr} · Fit (no crop) · Tile ${m.tileWidth}×${m.tileHeight} · Visible ${m.visiblePct}%`;
-  } else if (el.frameOverlay) {
-    el.frameOverlay.hidden = true;
-  }
-}
-
-async function refreshCameraList(selectedDeviceId = '') {
-  if (!el.cameraSelect || !navigator.mediaDevices?.enumerateDevices) return;
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter((d) => d.kind === 'videoinput');
-    const trackId = localStream?.getVideoTracks?.()[0]?.getSettings?.().deviceId || selectedDeviceId;
-    el.cameraSelect.innerHTML = '';
-    if (cams.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'Default camera';
-      el.cameraSelect.appendChild(opt);
-      return;
-    }
-    cams.forEach((cam, idx) => {
-      const opt = document.createElement('option');
-      opt.value = cam.deviceId;
-      opt.textContent = cam.label || `Camera ${idx + 1}`;
-      if (trackId && cam.deviceId === trackId) opt.selected = true;
-      el.cameraSelect.appendChild(opt);
-    });
-  } catch {
-    // Ignore enumerateDevices failures
   }
 }
 
@@ -359,7 +276,6 @@ async function startCamera(mode) {
   const vTrack = stream.getVideoTracks()[0];
   if (vTrack) {
     await resetZoomToWide(vTrack);
-    syncZoomControl(vTrack);
   }
   return stream;
 }
@@ -388,7 +304,6 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
   if (!localStream || flippingCamera) return;
   flippingCamera = true;
   el.flipBtn.disabled = true;
-  if (el.cameraSelect) el.cameraSelect.disabled = true;
   el.stageError.hidden = true;
 
   const prevMode = facingMode;
@@ -457,9 +372,7 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
     facingMode = reportedFacing || nextMode;
 
     el.previewVideo.srcObject = localStream;
-    syncZoomControl(newVideoTrack);
     syncCaptureInfo();
-    await refreshCameraList(settings.deviceId || '');
     await el.previewVideo.play().catch(() => {});
     syncCaptureInfo();
     applyAudioMuteState();
@@ -477,7 +390,6 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
       }
       localStream = recovered;
       el.previewVideo.srcObject = localStream;
-      syncZoomControl(fallbackTrack);
       syncCaptureInfo();
       await el.previewVideo.play().catch(() => {});
     } catch {}
@@ -486,46 +398,12 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
   } finally {
     flippingCamera = false;
     el.flipBtn.disabled = false;
-    if (el.cameraSelect) el.cameraSelect.disabled = false;
   }
 }
 
 let flippingCamera = false;
 el.flipBtn.addEventListener('click', () => {
   switchCameraTrack({ targetMode: facingMode === 'user' ? 'environment' : 'user' });
-});
-
-el.cameraSelect?.addEventListener('change', () => {
-  const deviceId = el.cameraSelect.value;
-  if (deviceId) {
-    switchCameraTrack({ deviceId });
-  }
-});
-
-el.zoomSlider?.addEventListener('input', async () => {
-  const track = localStream?.getVideoTracks?.()[0];
-  const val = Number(el.zoomSlider.value || 1);
-  if (el.zoomVal) el.zoomVal.textContent = `${val.toFixed(1).replace(/\.0$/, '')}x`;
-  if (!track) return;
-  try {
-    await track.applyConstraints({ advanced: [{ zoom: val }] });
-    syncCaptureInfo();
-  } catch {
-    // Ignore unsupported zoom constraint update
-  }
-});
-
-el.camInfoBtn?.addEventListener('click', () => {
-  camInfoVisible = !camInfoVisible;
-  el.camInfoBtn.setAttribute('aria-expanded', String(camInfoVisible));
-  if (el.camInfoPanel) el.camInfoPanel.hidden = !camInfoVisible;
-  syncCaptureInfo();
-});
-
-el.frameCheckBtn?.addEventListener('click', () => {
-  frameCheckVisible = !frameCheckVisible;
-  el.frameCheckBtn.setAttribute('aria-pressed', String(frameCheckVisible));
-  syncCaptureInfo();
 });
 
 const onViewportOrVideoChange = () => {
@@ -838,7 +716,6 @@ el.joinForm.addEventListener('submit', async (ev) => {
     localStream = await startCamera(facingMode);
     el.previewVideo.srcObject = localStream;
     syncCaptureInfo();
-    await refreshCameraList();
     await el.previewVideo.play().catch(() => {});
     syncCaptureInfo();
     await acquireWakeLock();

@@ -200,44 +200,6 @@
   letter-spacing: 0.05em;
 }
 
-.aud-frame-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  pointer-events: none;
-}
-.aud-frame-box {
-  position: absolute;
-  border: 2px solid #22c55e;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
-}
-.aud-frame-box .c {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-color: #22c55e;
-  border-style: solid;
-  border-width: 0;
-}
-.aud-frame-box .c.tl { top: -2px; left: -2px; border-top-width: 4px; border-left-width: 4px; }
-.aud-frame-box .c.tr { top: -2px; right: -2px; border-top-width: 4px; border-right-width: 4px; }
-.aud-frame-box .c.bl { bottom: -2px; left: -2px; border-bottom-width: 4px; border-left-width: 4px; }
-.aud-frame-box .c.br { bottom: -2px; right: -2px; border-bottom-width: 4px; border-right-width: 4px; }
-.aud-frame-readout {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  right: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: rgba(5, 8, 15, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  color: #f8fafc;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
 .aud-preview-note {
   position: absolute;
   bottom: 0;
@@ -250,58 +212,6 @@
   color: #e2e8f0;
   text-align: center;
   pointer-events: none;
-}
-
-.aud-cam-tools {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-hairline);
-}
-.aud-cam-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.aud-select-wrap {
-  flex: 1;
-  min-width: 150px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
-.aud-select-wrap select {
-  flex: 1;
-  min-width: 0;
-  min-height: 36px;
-  padding: 4px 8px;
-  font-size: 13px;
-}
-.aud-zoom-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
-.aud-zoom-row input[type="range"] {
-  flex: 1;
-}
-.aud-caminfo-panel {
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: #0d1422;
-  border: 1px solid var(--border-hairline);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  color: #cbd5e1;
-  line-height: 1.45;
 }
 
 .aud-controls {

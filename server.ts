@@ -1037,30 +1037,7 @@ app.get('/join/:slug', async (req, res) => {
       <div class="aud-video-wrap" id="aud-video-wrap">
         <video id="aud-preview" autoplay playsinline muted></video>
         <div class="aud-onair-frame" id="aud-onair-frame" hidden><span class="onair-tag">ON AIR</span></div>
-        <div class="aud-frame-overlay" id="aud-frame-overlay" hidden>
-          <div class="aud-frame-box" id="aud-frame-box">
-            <i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>
-          </div>
-          <div class="aud-frame-readout" id="aud-frame-readout"></div>
-        </div>
         <div class="aud-preview-note" id="aud-preview-note">Previewing locally · Full uncropped frame</div>
-      </div>
-      <div class="aud-cam-tools">
-        <div class="aud-cam-row">
-          <label class="aud-select-wrap" for="aud-camera-select">
-            <span>Camera</span>
-            <select id="aud-camera-select" aria-label="Select camera">
-              <option value="">Default camera</option>
-            </select>
-          </label>
-          <button type="button" class="btn btn-secondary btn-sm" id="aud-caminfo-btn" aria-expanded="false">Camera info</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="aud-framecheck-btn" aria-pressed="false">Frame check</button>
-        </div>
-        <label class="aud-zoom-row" id="aud-zoom-wrap" hidden>
-          <span>Zoom: <strong id="aud-zoom-val">1x</strong></span>
-          <input type="range" id="aud-zoom-slider" min="1" max="1" step="0.1" value="1">
-        </label>
-        <div class="aud-caminfo-panel" id="aud-caminfo-panel" hidden></div>
       </div>
       <div class="aud-alert" id="aud-stage-error" hidden></div>
       <div class="aud-controls">
