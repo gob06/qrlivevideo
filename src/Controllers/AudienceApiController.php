@@ -27,9 +27,11 @@ class AudienceApiController
         $message = Validator::cleanText((string)($in['message'] ?? ''), 120);
         $consent = !empty($in['consent']);
         $existingToken = Validator::cleanText((string)($in['session_token'] ?? ($_COOKIE['qrlw_aud_' . $slug] ?? '')), 96);
+        $facingMode = in_array(($in['facing_mode'] ?? ''), ['user', 'environment'], true) ? (string)$in['facing_mode'] : 'unknown';
+        $capJson = self::encodeCaptureSettings($in['capture_settings'] ?? null);
 
-        if ($slug === '' || $rawName === '' || !$consent) {
-            jsonResponse(['error' => 'Display name and camera/mic consent are required.'], 422);
+        if ($slug === '' || !$consent) {
+            jsonResponse(['error' => 'Camera and microphone consent is required.'], 422);
         }
 
         $event = Database::fetchOne('SELECT * FROM events WHERE slug = ?', [$slug]);
@@ -50,7 +52,7 @@ class AudienceApiController
             jsonResponse(['error' => 'You have been removed from this event.', 'code' => 'banned'], 403);
         }
 
-        $name = Validator::filterProfanity($rawName);
+        $name = $rawName !== '' ? Validator::filterProfanity($rawName) : '';
         $now = utcNow();
         $ua = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 250);
 
@@ -67,16 +69,17 @@ class AudienceApiController
                     jsonResponse(['error' => 'Joining is currently locked by the host.', 'code' => 'join_locked'], 403);
                 }
                 $newStatus = in_array($existing['status'], ['waiting', 'onair'], true) ? $existing['status'] : 'waiting';
+                $resolvedName = $name !== '' ? $name : ((string)$existing['display_name'] !== '' ? (string)$existing['display_name'] : 'Guest #' . ((int)$event['total_joined'] + 1));
                 Database::execute(
-                    'UPDATE participants SET display_name = ?, message = ?, status = ?, last_seen = ?, ip_hash = ?, user_agent = ? WHERE id = ?',
-                    [$name, $message, $newStatus, $now, $ipHash, $ua, (int)$existing['id']]
+                    'UPDATE participants SET display_name = ?, message = ?, status = ?, facing_mode = ?, capture_settings = ?, last_seen = ?, ip_hash = ?, user_agent = ? WHERE id = ?',
+                    [$resolvedName, $message, $newStatus, $facingMode, $capJson, $now, $ipHash, $ua, (int)$existing['id']]
                 );
                 self::setAudienceCookie($slug, $existingToken);
                 jsonResponse([
                     'participant_id' => (int)$existing['id'],
                     'session_token' => $existingToken,
                     'status' => $newStatus,
-                    'display_name' => $name,
+                    'display_name' => $resolvedName,
                     'ice_servers' => Bootstrap::iceServersConfig(),
                 ]);
             }
@@ -95,11 +98,15 @@ class AudienceApiController
             jsonResponse(['error' => 'Lobby is currently full. Please try again shortly.', 'code' => 'full'], 403);
         }
 
+        if ($name === '') {
+            $name = 'Guest #' . ((int)$event['total_joined'] + 1);
+        }
+
         $token = bin2hex(random_bytes(24));
         Database::execute(
-            'INSERT INTO participants (event_id, session_token, display_name, message, status, last_seen, joined_at, ip_hash, user_agent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [$eventId, $token, $name, $message, 'waiting', $now, $now, $ipHash, $ua]
+            'INSERT INTO participants (event_id, session_token, display_name, message, status, facing_mode, capture_settings, last_seen, joined_at, ip_hash, user_agent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [$eventId, $token, $name, $message, 'waiting', $facingMode, $capJson, $now, $now, $ipHash, $ua]
         );
         $pid = Database::lastInsertId();
 
@@ -221,6 +228,15 @@ class AudienceApiController
         $token = Validator::cleanText((string)($in['session_token'] ?? ''), 96);
         $p = self::loadParticipant($slug, $token);
 
+        if (isset($in['facing_mode']) || isset($in['capture_settings'])) {
+            $fm = in_array(($in['facing_mode'] ?? ''), ['user', 'environment'], true) ? (string)$in['facing_mode'] : $p['facing_mode'];
+            $capJson = isset($in['capture_settings']) ? self::encodeCaptureSettings($in['capture_settings']) : $p['capture_settings'];
+            Database::execute(
+                'UPDATE participants SET facing_mode = ?, capture_settings = ? WHERE id = ?',
+                [$fm, $capJson, (int)$p['id']]
+            );
+        }
+
         Database::upsert(
             'stream_stats',
             ['event_id' => (int)$p['event_id'], 'participant_id' => (int)$p['id'], 'reporter' => 'audience'],
@@ -237,6 +253,26 @@ class AudienceApiController
             ]
         );
         jsonResponse(['ok' => true]);
+    }
+
+    private static function encodeCaptureSettings(mixed $raw): ?string
+    {
+        if (!is_array($raw)) {
+            return null;
+        }
+        $clean = [
+            'width' => max(0, (int)($raw['width'] ?? 0)),
+            'height' => max(0, (int)($raw['height'] ?? 0)),
+            'videoWidth' => max(0, (int)($raw['videoWidth'] ?? 0)),
+            'videoHeight' => max(0, (int)($raw['videoHeight'] ?? 0)),
+            'frameRate' => max(0.0, (float)($raw['frameRate'] ?? 0)),
+            'aspectRatio' => max(0.0, (float)($raw['aspectRatio'] ?? 0)),
+            'facingMode' => in_array(($raw['facingMode'] ?? ''), ['user', 'environment'], true) ? (string)$raw['facingMode'] : 'unknown',
+            'zoom' => is_numeric($raw['zoom'] ?? null) ? round((float)$raw['zoom'], 2) : null,
+            'label' => Validator::cleanText((string)($raw['label'] ?? ''), 80),
+        ];
+        $encoded = json_encode($clean, JSON_UNESCAPED_SLASHES);
+        return ($encoded !== false && strlen($encoded) <= 1024) ? $encoded : null;
     }
 
     public static function leave(): void

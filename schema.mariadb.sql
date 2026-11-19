@@ -67,7 +67,12 @@ CREATE TABLE IF NOT EXISTS events (
     show_labels TINYINT(1) NOT NULL DEFAULT 1,
     audio_enabled TINYINT(1) NOT NULL DEFAULT 0,
     blackout TINYINT(1) NOT NULL DEFAULT 0,
+    wall_fit_mode ENUM('fit', 'fill', 'stretch') NOT NULL DEFAULT 'fit',
+    wall_tile_bg ENUM('blur', 'solid', 'transparent') NOT NULL DEFAULT 'blur',
+    wall_tile_bg_color VARCHAR(20) NOT NULL DEFAULT '#090d16',
+    mirror_front_wall TINYINT(1) NOT NULL DEFAULT 0,
     logo_image_id INT UNSIGNED DEFAULT NULL,
+    join_logo_image_id INT UNSIGNED DEFAULT NULL,
     qr_logo_shape ENUM('square', 'circle') NOT NULL DEFAULT 'square',
     qr_logo_fit ENUM('contain', 'cover') NOT NULL DEFAULT 'contain',
     qr_logo_scale TINYINT UNSIGNED NOT NULL DEFAULT 18,
@@ -85,6 +90,7 @@ CREATE TABLE IF NOT EXISTS events (
     created_by INT UNSIGNED DEFAULT NULL,
     created_at DATETIME NOT NULL,
     CONSTRAINT fk_events_logo FOREIGN KEY (logo_image_id) REFERENCES media_images(id) ON DELETE SET NULL,
+    CONSTRAINT fk_events_join_logo FOREIGN KEY (join_logo_image_id) REFERENCES media_images(id) ON DELETE SET NULL,
     CONSTRAINT fk_events_creator FOREIGN KEY (created_by) REFERENCES admins(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -111,6 +117,8 @@ CREATE TABLE IF NOT EXISTS participants (
     joined_at DATETIME NOT NULL,
     thumbnail_data MEDIUMTEXT DEFAULT NULL,
     thumb_version INT UNSIGNED NOT NULL DEFAULT 0,
+    facing_mode VARCHAR(24) NOT NULL DEFAULT '',
+    capture_settings TEXT DEFAULT NULL,
     ip_hash CHAR(64) NOT NULL DEFAULT '',
     user_agent VARCHAR(255) NOT NULL DEFAULT '',
     INDEX idx_participants_event_status (event_id, status, last_seen),
@@ -122,6 +130,7 @@ CREATE TABLE IF NOT EXISTS wall_slots (
     event_id INT UNSIGNED NOT NULL,
     slot_no TINYINT UNSIGNED NOT NULL,
     participant_id INT UNSIGNED NOT NULL,
+    fit_mode ENUM('fit', 'fill', 'stretch') DEFAULT NULL,
     updated_at DATETIME NOT NULL,
     PRIMARY KEY (event_id, slot_no),
     CONSTRAINT fk_ws_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
@@ -216,4 +225,10 @@ CREATE TABLE IF NOT EXISTS event_timeline (
     created_at DATETIME NOT NULL,
     INDEX idx_timeline_event (event_id, id),
     CONSTRAINT fk_tl_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key VARCHAR(80) PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

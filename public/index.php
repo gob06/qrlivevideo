@@ -82,6 +82,7 @@ try {
     if (
         $path === '/admin/events' ||
         $path === '/admin/images' ||
+        $path === '/admin/frame-check' ||
         $path === '/admin/accounts' ||
         $path === '/admin/audit' ||
         preg_match('#^/admin/events/\d+(/monitor)?$#', $path)
@@ -204,9 +205,15 @@ try {
         AdminApiController::deleteAccount((int)$m[1]);
     }
 
-    // Audit Log API (Super Admin)
+    // Audit Log & TURN Config API (Super Admin)
     if ($path === '/api/admin/audit' && $method === 'GET') {
         AdminApiController::auditLog();
+    }
+    if ($path === '/api/admin/turn-config' && $method === 'GET') {
+        AdminApiController::getTurnConfig();
+    }
+    if ($path === '/api/admin/turn-config' && $method === 'POST') {
+        AdminApiController::updateTurnConfig();
     }
 
     if (str_starts_with($path, '/api/')) {

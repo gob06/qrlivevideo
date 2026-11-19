@@ -63,32 +63,76 @@ type IceServerEntry = { urls: string | string[]; username?: string; credential?:
 
 function isNonPlaceholderSecret(val: string | undefined): string {
   const s = String(val || '').trim();
-  if (!s || /not yet|placeholder|replace_with|your_/i.test(s)) return '';
+  if (!s || /not yet|placeholder|replace_with|your_|change_me|^x{3,}$|^y{3,}$/i.test(s)) return '';
   return s;
 }
 
-function getEffectiveTurnConfig(): { urls: string[]; user: string; pass: string } {
+type TurnOverride = {
+  mode: 'cloudflare' | 'static';
+  cf_key_id?: string;
+  cf_api_token?: string;
+  cf_ttl?: number;
+  turn_url?: string;
+  turn_user?: string;
+  turn_pass?: string;
+};
+
+function readTurnOverride(): TurnOverride | null {
+  try {
+    if (!db) return null;
+    const row = db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'turn_config'").get() as { setting_value?: string } | undefined;
+    if (!row?.setting_value) return null;
+    const parsed = JSON.parse(row.setting_value) as TurnOverride;
+    if (parsed && (parsed.mode === 'cloudflare' || parsed.mode === 'static')) {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+function getEffectiveTurnConfig(): { urls: string[]; user: string; pass: string; source: 'db' | 'env' | 'none' } {
+  const override = readTurnOverride();
+  if (override) {
+    if (override.mode !== 'static') return { urls: [], user: '', pass: '', source: 'none' };
+    const urls = String(override.turn_url || '').split(',').map((s) => s.trim()).filter(isValidIceUrl);
+    const user = isNonPlaceholderSecret(override.turn_user);
+    const pass = isNonPlaceholderSecret(override.turn_pass);
+    if (urls.length > 0 && user && pass) {
+      return { urls, user, pass, source: 'db' };
+    }
+    return { urls: [], user: '', pass: '', source: 'none' };
+  }
   const envTurnUrls = (process.env.TURN_URL || '').split(',').map((s) => s.trim()).filter(isValidIceUrl);
   if (envTurnUrls.length > 0) {
-    return {
-      urls: envTurnUrls,
-      user: process.env.TURN_USER || '',
-      pass: process.env.TURN_PASS || '',
-    };
+    const user = isNonPlaceholderSecret(process.env.TURN_USER);
+    const pass = isNonPlaceholderSecret(process.env.TURN_PASS);
+    if (user && pass) {
+      return { urls: envTurnUrls, user, pass, source: 'env' };
+    }
   }
   const fileEnv = readDotEnvFallback();
   const fileTurnUrls = (fileEnv.TURN_URL || '').split(',').map((s) => s.trim()).filter(isValidIceUrl);
   if (fileTurnUrls.length > 0) {
-    return {
-      urls: fileTurnUrls,
-      user: fileEnv.TURN_USER || '',
-      pass: fileEnv.TURN_PASS || '',
-    };
+    const user = isNonPlaceholderSecret(fileEnv.TURN_USER);
+    const pass = isNonPlaceholderSecret(fileEnv.TURN_PASS);
+    if (user && pass) {
+      return { urls: fileTurnUrls, user, pass, source: 'env' };
+    }
   }
-  return { urls: [], user: '', pass: '' };
+  return { urls: [], user: '', pass: '', source: 'none' };
 }
 
-function getCloudflareTurnConfig(): { keyId: string; apiToken: string; ttl: number } | null {
+function getCloudflareTurnConfig(): { keyId: string; apiToken: string; ttl: number; source: 'db' | 'env' } | null {
+  const override = readTurnOverride();
+  if (override) {
+    if (override.mode !== 'cloudflare') return null;
+    const keyId = isNonPlaceholderSecret(override.cf_key_id);
+    const apiToken = isNonPlaceholderSecret(override.cf_api_token);
+    if (!keyId || !apiToken) return null;
+    const rawTtl = Number(override.cf_ttl || 86400);
+    const ttl = Number.isFinite(rawTtl) ? Math.max(60, Math.min(86400, Math.floor(rawTtl))) : 86400;
+    return { keyId, apiToken, ttl, source: 'db' };
+  }
   const envKeyId = isNonPlaceholderSecret(process.env.CLOUDFLARE_TURN_KEY_ID);
   const envToken = isNonPlaceholderSecret(process.env.CLOUDFLARE_TURN_API_TOKEN);
   const fileEnv = (!envKeyId || !envToken) ? readDotEnvFallback() : {};
@@ -97,7 +141,7 @@ function getCloudflareTurnConfig(): { keyId: string; apiToken: string; ttl: numb
   if (!keyId || !apiToken) return null;
   const rawTtl = Number(process.env.CLOUDFLARE_TURN_TTL || fileEnv.CLOUDFLARE_TURN_TTL || 86400);
   const ttl = Number.isFinite(rawTtl) ? Math.max(60, Math.min(86400, Math.floor(rawTtl))) : 86400;
-  return { keyId, apiToken, ttl };
+  return { keyId, apiToken, ttl, source: 'env' };
 }
 
 let cfIceCache: {
@@ -105,14 +149,34 @@ let cfIceCache: {
   servers: IceServerEntry[];
   expiresAt: number;
   failUntil: number;
+  lastError: string;
+  loggedFailKey: string;
   inFlight: Promise<IceServerEntry[]> | null;
 } = {
   cacheKey: '',
   servers: [],
   expiresAt: 0,
   failUntil: 0,
+  lastError: '',
+  loggedFailKey: '',
   inFlight: null,
 };
+
+function clearCfIceCache() {
+  cfIceCache = {
+    cacheKey: '',
+    servers: [],
+    expiresAt: 0,
+    failUntil: 0,
+    lastError: '',
+    loggedFailKey: '',
+    inFlight: null,
+  };
+}
+
+function cfCacheKeyFor(cf: { keyId: string; apiToken: string; ttl: number }): string {
+  return crypto.createHash('sha256').update(`${cf.keyId}:${cf.apiToken}:${cf.ttl}`).digest('hex');
+}
 
 function sanitizeIceEntry(item: unknown): IceServerEntry | null {
   if (!item || typeof item !== 'object') return null;
@@ -128,10 +192,56 @@ function sanitizeIceEntry(item: unknown): IceServerEntry | null {
   return entry;
 }
 
+async function requestCloudflareIceServers(
+  keyId: string,
+  apiToken: string,
+  ttl: number
+): Promise<{ ok: boolean; status: number; servers: IceServerEntry[]; error: string }> {
+  try {
+    const resp = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ttl }),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      return {
+        ok: false,
+        status: resp.status,
+        servers: [],
+        error: `HTTP ${resp.status}: ${body.replace(/\s+/g, ' ').trim().slice(0, 140)}`,
+      };
+    }
+    const data = (await resp.json()) as { iceServers?: unknown };
+    const rawList = Array.isArray(data?.iceServers)
+      ? data.iceServers
+      : (data?.iceServers ? [data.iceServers] : []);
+    const parsed = rawList.map(sanitizeIceEntry).filter((x): x is IceServerEntry => Boolean(x));
+    if (parsed.length === 0) {
+      return { ok: false, status: resp.status, servers: [], error: 'Cloudflare returned no valid ICE servers' };
+    }
+    return { ok: true, status: resp.status, servers: parsed, error: '' };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      servers: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 async function fetchCloudflareIceServers(): Promise<IceServerEntry[]> {
   const cf = getCloudflareTurnConfig();
   if (!cf) return [];
-  const cacheKey = `${cf.keyId}:${cf.ttl}`;
+  const cacheKey = cfCacheKeyFor(cf);
   const now = Date.now();
   if (cfIceCache.cacheKey === cacheKey && cfIceCache.servers.length > 0 && now < cfIceCache.expiresAt) {
     return cfIceCache.servers;
@@ -143,43 +253,31 @@ async function fetchCloudflareIceServers(): Promise<IceServerEntry[]> {
     return cfIceCache.inFlight;
   }
 
+  if (cfIceCache.cacheKey !== cacheKey) {
+    cfIceCache.servers = [];
+    cfIceCache.expiresAt = 0;
+    cfIceCache.failUntil = 0;
+    cfIceCache.lastError = '';
+  }
   cfIceCache.cacheKey = cacheKey;
   cfIceCache.inFlight = (async () => {
     try {
-      const resp = await fetch(
-        `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cf.keyId)}/credentials/generate-ice-servers`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${cf.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ ttl: cf.ttl }),
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        console.warn(`[CF TURN] HTTP ${resp.status}: ${body.slice(0, 160)}`);
-        cfIceCache.failUntil = Date.now() + 30_000;
-        return cfIceCache.servers;
-      }
-      const data = (await resp.json()) as { iceServers?: unknown };
-      const rawList = Array.isArray(data?.iceServers)
-        ? data.iceServers
-        : (data?.iceServers ? [data.iceServers] : []);
-      const parsed = rawList.map(sanitizeIceEntry).filter((x): x is IceServerEntry => Boolean(x));
-      if (parsed.length > 0) {
-        cfIceCache.servers = parsed;
+      const res = await requestCloudflareIceServers(cf.keyId, cf.apiToken, cf.ttl);
+      if (res.ok) {
+        cfIceCache.servers = res.servers;
         cfIceCache.expiresAt = Date.now() + Math.min(43200, Math.max(30, Math.floor(cf.ttl * 0.5))) * 1000;
         cfIceCache.failUntil = 0;
+        cfIceCache.lastError = '';
+        cfIceCache.loggedFailKey = '';
       } else {
-        cfIceCache.failUntil = Date.now() + 30_000;
+        const isClientErr = res.status >= 400 && res.status < 500;
+        cfIceCache.lastError = res.error;
+        cfIceCache.failUntil = Date.now() + (isClientErr ? 300_000 : 30_000);
+        if (cfIceCache.loggedFailKey !== cacheKey) {
+          cfIceCache.loggedFailKey = cacheKey;
+          console.warn(`[CF TURN] ${cfIceCache.lastError}`);
+        }
       }
-      return cfIceCache.servers;
-    } catch (err) {
-      console.warn('[CF TURN] fetch failed:', err instanceof Error ? err.message : String(err));
-      cfIceCache.failUntil = Date.now() + 30_000;
       return cfIceCache.servers;
     } finally {
       cfIceCache.inFlight = null;
@@ -209,7 +307,7 @@ function getStaticIceServers(): IceServerEntry[] {
 
 function getIceServers(): IceServerEntry[] {
   const cf = getCloudflareTurnConfig();
-  if (cf && cfIceCache.servers.length > 0 && cfIceCache.cacheKey === `${cf.keyId}:${cf.ttl}`) {
+  if (cf && cfIceCache.servers.length > 0 && cfIceCache.cacheKey === cfCacheKeyFor(cf)) {
     return cfIceCache.servers;
   }
   return getStaticIceServers();
@@ -224,7 +322,21 @@ async function getIceServersAsync(): Promise<IceServerEntry[]> {
 }
 
 function turnConfigured(): boolean {
-  return Boolean(getCloudflareTurnConfig()) || getEffectiveTurnConfig().urls.length > 0;
+  if (getEffectiveTurnConfig().urls.length > 0) return true;
+  const cf = getCloudflareTurnConfig();
+  if (!cf) return false;
+  if (cfIceCache.cacheKey === cfCacheKeyFor(cf) && cfIceCache.lastError && cfIceCache.servers.length === 0) {
+    return false;
+  }
+  return true;
+}
+
+function getTurnError(): string {
+  const cf = getCloudflareTurnConfig();
+  if (cf && cfIceCache.cacheKey === cfCacheKeyFor(cf) && cfIceCache.lastError && cfIceCache.servers.length === 0) {
+    return cfIceCache.lastError;
+  }
+  return '';
 }
 
 // ---------------- SQLITE SETUP ----------------
@@ -240,6 +352,33 @@ db.exec('PRAGMA busy_timeout = 5000;');
 
 const schemaSql = fs.readFileSync(path.join(ROOT, 'schema.sqlite.sql'), 'utf8');
 db.exec(schemaSql);
+const evCols = db.prepare('PRAGMA table_info(events)').all() as Array<{ name: string }>;
+if (!evCols.some((c) => c.name === 'join_logo_image_id')) {
+  db.exec('ALTER TABLE events ADD COLUMN join_logo_image_id INTEGER DEFAULT NULL REFERENCES media_images(id) ON DELETE SET NULL');
+}
+if (!evCols.some((c) => c.name === 'wall_fit_mode')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_fit_mode TEXT NOT NULL DEFAULT 'fit'");
+}
+if (!evCols.some((c) => c.name === 'wall_tile_bg')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_tile_bg TEXT NOT NULL DEFAULT 'blur'");
+}
+if (!evCols.some((c) => c.name === 'wall_tile_bg_color')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_tile_bg_color TEXT NOT NULL DEFAULT '#090d16'");
+}
+if (!evCols.some((c) => c.name === 'mirror_front_wall')) {
+  db.exec('ALTER TABLE events ADD COLUMN mirror_front_wall INTEGER NOT NULL DEFAULT 0');
+}
+const partCols = db.prepare('PRAGMA table_info(participants)').all() as Array<{ name: string }>;
+if (!partCols.some((c) => c.name === 'facing_mode')) {
+  db.exec("ALTER TABLE participants ADD COLUMN facing_mode TEXT NOT NULL DEFAULT 'unknown'");
+}
+if (!partCols.some((c) => c.name === 'capture_settings')) {
+  db.exec('ALTER TABLE participants ADD COLUMN capture_settings TEXT DEFAULT NULL');
+}
+const slotCols = db.prepare('PRAGMA table_info(wall_slots)').all() as Array<{ name: string }>;
+if (!slotCols.some((c) => c.name === 'fit_mode')) {
+  db.exec('ALTER TABLE wall_slots ADD COLUMN fit_mode TEXT DEFAULT NULL');
+}
 
 function utcNow(offsetSec = 0): string {
   const d = new Date(Date.now() + offsetSec * 1000);
@@ -658,7 +797,7 @@ function usedBytes(): number {
 }
 
 function syncUseCounts() {
-  dbRun('UPDATE media_images SET use_count = (SELECT COUNT(*) FROM events WHERE events.logo_image_id = media_images.id)');
+  dbRun('UPDATE media_images SET use_count = (SELECT COUNT(*) FROM events WHERE events.logo_image_id = media_images.id OR events.join_logo_image_id = media_images.id)');
 }
 
 function detectImageTypeAndDims(buf: Buffer): { mime: string; ext: string; width: number; height: number; isSvg: boolean } | null {
@@ -821,19 +960,34 @@ app.get('/', (req, res) => {
 
 app.get('/join/:slug', async (req, res) => {
   const slug = cleanSlug(req.params.slug);
-  const event = dbGet<{ id: number; slug: string; title: string; status: string; join_locked: number }>(
-    'SELECT id, slug, title, status, join_locked FROM events WHERE slug = ?',
+  const event = dbGet<{
+    id: number;
+    slug: string;
+    title: string;
+    status: string;
+    join_locked: number;
+    logo_filename: string | null;
+    join_logo_filename: string | null;
+  }>(
+    `SELECT e.id, e.slug, e.title, e.status, e.join_locked, m.filename AS logo_filename, jm.filename AS join_logo_filename
+     FROM events e
+     LEFT JOIN media_images m ON m.id = e.logo_image_id
+     LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+     WHERE e.slug = ?`,
     slug
   );
   if (!event) {
     res.status(404).type('html').send('<h1>Event not found</h1>');
     return;
   }
+  const brandFile = event.join_logo_filename || event.logo_filename;
+  const brandLogoUrl = brandFile ? `/uploads/logos/${encodeURIComponent(String(brandFile))}` : null;
   const config = {
     eventSlug: event.slug,
     eventTitle: event.title,
     eventStatus: event.status,
     joinLocked: event.join_locked === 1,
+    brandLogoUrl,
     signalingMode: SIGNALING_MODE,
     iceServers: await getIceServersAsync(),
     pollIdleMs: CONFIG.pollIdleMs,
@@ -845,7 +999,7 @@ app.get('/join/:slug', async (req, res) => {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>${esc(config.eventTitle)} — Join Live Wall</title>
   <link rel="stylesheet" href="/assets/css/common.css?v=${ASSET_VER}">
   <link rel="stylesheet" href="/assets/css/audience.css?v=${ASSET_VER}">
@@ -865,21 +1019,48 @@ app.get('/join/:slug', async (req, res) => {
       <button type="button" class="btn btn-secondary" id="aud-copy-link">Copy Page Link</button>
     </section>
     <section class="aud-card" id="aud-step-join">
+      <div class="aud-brand-wrap" id="aud-brand-wrap"${brandLogoUrl ? '' : ' hidden'}>
+        <img id="aud-brand-img" src="${brandLogoUrl ? esc(brandLogoUrl) : ''}" alt="${esc(config.eventTitle)} branding">
+      </div>
       <h1 class="aud-heading">Join the Live Screen</h1>
       <p class="aud-sub">Share your camera reaction with the venue screen. Your video only streams live if the host puts you on air.</p>
       <div class="aud-alert" id="aud-join-error" hidden></div>
       <form id="aud-join-form" class="aud-form">
-        <label class="field"><span>Display name *</span><input type="text" id="aud-name" name="display_name" maxlength="40" required autocomplete="nickname" placeholder="e.g. Alex"></label>
-        <label class="field"><span>Short shoutout (optional)</span><input type="text" id="aud-message" name="message" maxlength="120" placeholder="e.g. Front row energy!"></label>
         <label class="consent-row"><input type="checkbox" id="aud-consent" required><span>My camera and microphone may be shown on the venue screen.</span></label>
         <button type="submit" class="btn btn-primary btn-lg" id="aud-start-btn">Start Camera &amp; Join</button>
       </form>
     </section>
     <section class="aud-stage" id="aud-step-stage" hidden>
-      <div class="aud-video-wrap">
+      <div class="aud-orient-hint" id="aud-orient-hint" hidden>
+        Landscape gives the best result on the big screen
+      </div>
+      <div class="aud-video-wrap" id="aud-video-wrap">
         <video id="aud-preview" autoplay playsinline muted></video>
         <div class="aud-onair-frame" id="aud-onair-frame" hidden><span class="onair-tag">ON AIR</span></div>
-        <div class="aud-preview-note" id="aud-preview-note">Previewing locally · Host sees thumbnail every 3s</div>
+        <div class="aud-frame-overlay" id="aud-frame-overlay" hidden>
+          <div class="aud-frame-box" id="aud-frame-box">
+            <i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>
+          </div>
+          <div class="aud-frame-readout" id="aud-frame-readout"></div>
+        </div>
+        <div class="aud-preview-note" id="aud-preview-note">Previewing locally · Full uncropped frame</div>
+      </div>
+      <div class="aud-cam-tools">
+        <div class="aud-cam-row">
+          <label class="aud-select-wrap" for="aud-camera-select">
+            <span>Camera</span>
+            <select id="aud-camera-select" aria-label="Select camera">
+              <option value="">Default camera</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm" id="aud-caminfo-btn" aria-expanded="false">Camera info</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="aud-framecheck-btn" aria-pressed="false">Frame check</button>
+        </div>
+        <label class="aud-zoom-row" id="aud-zoom-wrap" hidden>
+          <span>Zoom: <strong id="aud-zoom-val">1x</strong></span>
+          <input type="range" id="aud-zoom-slider" min="1" max="1" step="0.1" value="1">
+        </label>
+        <div class="aud-caminfo-panel" id="aud-caminfo-panel" hidden></div>
       </div>
       <div class="aud-alert" id="aud-stage-error" hidden></div>
       <div class="aud-controls">
@@ -1209,6 +1390,7 @@ async function renderAdminShell(req: Request, res: Response) {
       <a href="/admin/events" class="adm-brand" data-nav="/admin/events">QR Live Wall</a>
       <nav class="adm-nav" aria-label="Main Navigation">
         <a href="/admin/events" class="adm-nav-link" data-nav="/admin/events">Events</a>
+        <a href="/admin/frame-check" class="adm-nav-link" data-nav="/admin/frame-check">Frame Check</a>
         <a href="/admin/images" class="adm-nav-link" data-nav="/admin/images">Image Bank</a>
         ${user.role === 'super_admin' ? `
           <a href="/admin/accounts" class="adm-nav-link" data-nav="/admin/accounts">Accounts</a>
@@ -1233,7 +1415,7 @@ async function renderAdminShell(req: Request, res: Response) {
 </html>`);
 }
 
-app.get(['/admin/events', '/admin/events/:id', '/admin/events/:id/monitor', '/admin/images', '/admin/accounts', '/admin/audit'], renderAdminShell);
+app.get(['/admin/events', '/admin/events/:id', '/admin/events/:id/monitor', '/admin/frame-check', '/admin/images', '/admin/accounts', '/admin/audit'], renderAdminShell);
 
 // ---------------- AUDIENCE API ----------------
 
@@ -1299,6 +1481,24 @@ function buildAudienceState(p: Record<string, unknown>) {
   };
 }
 
+function encodeCaptureSettings(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const clean = {
+    width: Math.max(0, Math.round(Number(r.width || 0))),
+    height: Math.max(0, Math.round(Number(r.height || 0))),
+    videoWidth: Math.max(0, Math.round(Number(r.videoWidth || 0))),
+    videoHeight: Math.max(0, Math.round(Number(r.videoHeight || 0))),
+    frameRate: Math.max(0, Number(r.frameRate || 0)),
+    aspectRatio: Math.max(0, Number(r.aspectRatio || 0)),
+    facingMode: r.facingMode === 'user' || r.facingMode === 'environment' ? r.facingMode : 'unknown',
+    zoom: typeof r.zoom === 'number' && Number.isFinite(r.zoom) ? Math.round(r.zoom * 100) / 100 : null,
+    label: cleanText(r.label, 80),
+  };
+  const encoded = JSON.stringify(clean);
+  return encoded.length <= 1024 ? encoded : null;
+}
+
 app.post('/api/audience/join', async (req, res) => {
   maybeCleanup();
   const hIp = ipHash(req);
@@ -1312,9 +1512,11 @@ app.post('/api/audience/join', async (req, res) => {
   const message = cleanText(req.body?.message, 120);
   const consent = Boolean(req.body?.consent);
   const existingToken = cleanText(req.body?.session_token || req.cookies?.[`qrlw_aud_${slug}`], 96);
+  const facingMode = req.body?.facing_mode === 'user' || req.body?.facing_mode === 'environment' ? req.body.facing_mode : 'unknown';
+  const capJson = encodeCaptureSettings(req.body?.capture_settings);
 
-  if (!slug || !rawName || !consent) {
-    res.status(422).json({ error: 'Display name and camera/mic consent are required.' });
+  if (!slug || !consent) {
+    res.status(422).json({ error: 'Camera and microphone consent is required.' });
     return;
   }
 
@@ -1340,7 +1542,7 @@ app.post('/api/audience/join', async (req, res) => {
     return;
   }
 
-  const name = filterProfanity(rawName);
+  let name = rawName ? filterProfanity(rawName) : '';
   const now = utcNow();
   const ua = String(req.headers['user-agent'] || '').slice(0, 250);
 
@@ -1356,11 +1558,14 @@ app.post('/api/audience/join', async (req, res) => {
         return;
       }
       const nextStatus = existing.status === 'waiting' || existing.status === 'onair' ? existing.status : 'waiting';
+      const resolvedName = name || String(existing.display_name || '') || `Guest #${Number(event.total_joined || 0) + 1}`;
       dbRun(
-        'UPDATE participants SET display_name = ?, message = ?, status = ?, last_seen = ?, ip_hash = ?, user_agent = ? WHERE id = ?',
-        name,
+        'UPDATE participants SET display_name = ?, message = ?, status = ?, facing_mode = ?, capture_settings = ?, last_seen = ?, ip_hash = ?, user_agent = ? WHERE id = ?',
+        resolvedName,
         message,
         nextStatus,
+        facingMode,
+        capJson,
         now,
         hIp,
         ua,
@@ -1370,7 +1575,7 @@ app.post('/api/audience/join', async (req, res) => {
         participant_id: existing.id,
         session_token: existingToken,
         status: nextStatus,
-        display_name: name,
+        display_name: resolvedName,
         ice_servers: await getIceServersAsync(),
       });
       return;
@@ -1388,14 +1593,20 @@ app.post('/api/audience/join', async (req, res) => {
     return;
   }
 
+  if (!name) {
+    name = `Guest #${Number(event.total_joined || 0) + 1}`;
+  }
+
   const token = crypto.randomBytes(24).toString('hex');
   const info = dbRun(
-    'INSERT INTO participants (event_id, session_token, display_name, message, status, last_seen, joined_at, ip_hash, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO participants (event_id, session_token, display_name, message, status, facing_mode, capture_settings, last_seen, joined_at, ip_hash, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     eventId,
     token,
     name,
     message,
     'waiting',
+    facingMode,
+    capJson,
     now,
     now,
     hIp,
@@ -1517,6 +1728,11 @@ app.post('/api/audience/stats', (req, res) => {
     res.status(404).json({ error: 'Session not found.' });
     return;
   }
+  if (req.body?.facing_mode !== undefined || req.body?.capture_settings !== undefined) {
+    const fm = req.body?.facing_mode === 'user' || req.body?.facing_mode === 'environment' ? req.body.facing_mode : String(p.facing_mode || 'unknown');
+    const capJson = req.body?.capture_settings !== undefined ? encodeCaptureSettings(req.body.capture_settings) : (p.capture_settings as string | null);
+    dbRun('UPDATE participants SET facing_mode = ?, capture_settings = ? WHERE id = ?', fm, capJson, p.id);
+  }
   dbRun(
     `INSERT INTO stream_stats (event_id, participant_id, reporter, state, width, height, fps, bitrate, packet_loss, rtt, relay_type, reported_at)
      VALUES (?, ?, 'audience', ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1578,7 +1794,7 @@ function verifyWall(slug: string, key: string) {
 function buildWallState(req: Request, event: Record<string, unknown>, viewerId: string) {
   const eid = Number(event.id);
   const slots = dbAll<Record<string, unknown>>(
-    `SELECT ws.slot_no, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin
+    `SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.facing_mode, p.capture_settings
      FROM wall_slots ws JOIN participants p ON p.id = ws.participant_id
      WHERE ws.event_id = ? AND p.status = 'onair' ORDER BY ws.slot_no ASC`,
     eid
@@ -1602,6 +1818,10 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
     max_wall_feeds: event.max_wall_feeds,
     show_labels: event.show_labels === 1,
     audio_enabled: event.audio_enabled === 1,
+    wall_fit_mode: event.wall_fit_mode || 'fit',
+    wall_tile_bg: event.wall_tile_bg || 'blur',
+    wall_tile_bg_color: event.wall_tile_bg_color || '#090d16',
+    mirror_front_wall: Number(event.mirror_front_wall || 0) === 1,
     qr: {
       joinUrl: `${baseUrl(req)}/join/${encodeURIComponent(String(event.slug))}`,
       logoUrl: event.logo_filename ? `/uploads/logos/${encodeURIComponent(String(event.logo_filename))}` : null,
@@ -1613,13 +1833,22 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
       fg: event.qr_fg,
       bg: event.qr_bg,
     },
-    slots: slots.map((s) => ({
-      slot_no: Number(s.slot_no),
-      participant_id: Number(s.participant_id),
-      display_name: s.name_hidden === 1 ? 'Guest' : s.display_name,
-      message: s.name_hidden === 1 ? '' : s.message,
-      muted: s.muted_by_admin === 1,
-    })),
+    slots: slots.map((s) => {
+      let capParsed: unknown = null;
+      if (typeof s.capture_settings === 'string' && s.capture_settings) {
+        try { capParsed = JSON.parse(s.capture_settings); } catch {}
+      }
+      return {
+        slot_no: Number(s.slot_no),
+        participant_id: Number(s.participant_id),
+        display_name: s.name_hidden === 1 ? 'Guest' : s.display_name,
+        message: s.name_hidden === 1 ? '' : s.message,
+        muted: s.muted_by_admin === 1,
+        fit_mode: s.fit_mode || null,
+        facing_mode: s.facing_mode || 'unknown',
+        capture_settings: capParsed,
+      };
+    }),
     signals: signals.map((s) => ({
       id: s.id,
       participant_id: s.participant_id,
@@ -1789,15 +2018,20 @@ app.get('/api/admin/events', (req, res) => {
   touchAdminPresence(user.session_id);
   const sql =
     user.role === 'super_admin' || user.event_scope === 'all'
-      ? `SELECT e.*, m.filename AS logo_filename,
+      ? `SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename,
                 (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'waiting') AS waiting_count,
                 (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'onair') AS onair_count
-         FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id ORDER BY e.created_at DESC`
-      : `SELECT e.*, m.filename AS logo_filename,
+         FROM events e
+         LEFT JOIN media_images m ON m.id = e.logo_image_id
+         LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+         ORDER BY e.created_at DESC`
+      : `SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename,
                 (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'waiting') AS waiting_count,
                 (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'onair') AS onair_count
          FROM events e JOIN admin_event_access aea ON aea.event_id = e.id AND aea.admin_id = ?
-         LEFT JOIN media_images m ON m.id = e.logo_image_id ORDER BY e.created_at DESC`;
+         LEFT JOIN media_images m ON m.id = e.logo_image_id
+         LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+         ORDER BY e.created_at DESC`;
   const events = user.role === 'super_admin' || user.event_scope === 'all' ? dbAll(sql) : dbAll(sql, user.id);
   res.json({ events });
 });
@@ -1880,6 +2114,18 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
     }
   }
 
+  const joinLogoImageId =
+    b.join_logo_image_id !== undefined
+      ? (b.join_logo_image_id === null || b.join_logo_image_id === '' ? null : Number(b.join_logo_image_id))
+      : ((event.join_logo_image_id as number | null) ?? null);
+  if (joinLogoImageId !== null) {
+    const jImg = dbGet("SELECT id FROM media_images WHERE id = ? AND (visibility = 'shared' OR uploaded_by = ?)", joinLogoImageId, user.id);
+    if (!jImg) {
+      res.status(404).json({ error: 'Selected join branding image is unavailable.' });
+      return;
+    }
+  }
+
   const qrShape = ['square', 'circle'].includes(b.qr_logo_shape) ? b.qr_logo_shape : String(event.qr_logo_shape);
   const qrFit = ['contain', 'cover'].includes(b.qr_logo_fit) ? b.qr_logo_fit : String(event.qr_logo_fit);
   const qrScale = b.qr_logo_scale !== undefined ? Math.max(10, Math.min(22, Number(b.qr_logo_scale))) : Number(event.qr_logo_scale);
@@ -1905,9 +2151,15 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
   dbRun('DELETE FROM wall_slots WHERE event_id = ? AND slot_no > ?', eventId, maxFeeds);
   dbRun("UPDATE participants SET status = 'waiting' WHERE event_id = ? AND status = 'onair' AND id NOT IN (SELECT participant_id FROM wall_slots WHERE event_id = ?)", eventId, eventId);
 
+  const wallFitMode = ['fit', 'fill', 'stretch'].includes(b.wall_fit_mode) ? b.wall_fit_mode : String(event.wall_fit_mode || 'fit');
+  const wallTileBg = ['blur', 'solid', 'transparent'].includes(b.wall_tile_bg) ? b.wall_tile_bg : String(event.wall_tile_bg || 'blur');
+  const wallTileBgColor = b.wall_tile_bg_color !== undefined ? hexColor(b.wall_tile_bg_color, '#090d16', false) : String(event.wall_tile_bg_color || '#090d16');
+  const mirrorFrontWall = b.mirror_front_wall !== undefined ? (b.mirror_front_wall ? 1 : 0) : Number(event.mirror_front_wall || 0);
+
   dbRun(
     `UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,
-     layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?,
+     layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?, join_logo_image_id = ?,
+     wall_fit_mode = ?, wall_tile_bg = ?, wall_tile_bg_color = ?, mirror_front_wall = ?,
      qr_logo_shape = ?, qr_logo_fit = ?, qr_logo_scale = ?, qr_logo_padding = ?, qr_logo_bg = ?, qr_fg = ?, qr_bg = ?,
      state_version = state_version + 1, last_action_by = ?, last_action_summary = ?, last_action_at = ?
      WHERE id = ?`,
@@ -1922,6 +2174,11 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
     audioEnabled,
     blackout,
     logoImageId,
+    joinLogoImageId,
+    wallFitMode,
+    wallTileBg,
+    wallTileBgColor,
+    mirrorFrontWall,
     qrShape,
     qrFit,
     qrScale,
@@ -1936,7 +2193,10 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
   );
   syncUseCounts();
   logAudit(req, eventId, user.id, user.display_name, 'event_settings', `Updated settings for ${title}`);
-  const updated = dbGet('SELECT e.*, m.filename AS logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id WHERE e.id = ?', eventId);
+  const updated = dbGet(
+    'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id WHERE e.id = ?',
+    eventId
+  );
   res.json({ event: updated });
 });
 
@@ -1962,7 +2222,7 @@ app.get('/api/admin/events/:id/state', (req, res) => {
   const eventId = Number(req.params.id);
   touchAdminPresence(user.session_id, eventId);
   const eventRow = dbGet<Record<string, unknown>>(
-    'SELECT e.*, m.filename AS logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id WHERE e.id = ?',
+    'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id WHERE e.id = ?',
     eventId
   );
   if (!eventRow || !canAccessEvent(user, eventId)) {
@@ -1972,8 +2232,8 @@ app.get('/api/admin/events/:id/state', (req, res) => {
 
   const participants = dbAll<Record<string, unknown>>(
     `SELECT p.id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.status,
-            p.preview_admin_id, p.last_seen, p.joined_at, p.thumb_version,
-            (p.thumbnail_data IS NOT NULL) AS has_thumb, ws.slot_no
+            p.facing_mode, p.capture_settings, p.preview_admin_id, p.last_seen, p.joined_at, p.thumb_version,
+            (p.thumbnail_data IS NOT NULL) AS has_thumb, ws.slot_no, ws.fit_mode AS slot_fit_mode
      FROM participants p
      LEFT JOIN wall_slots ws ON ws.event_id = p.event_id AND ws.participant_id = p.id
      WHERE p.event_id = ? AND p.status IN ('waiting', 'onair')
@@ -2010,7 +2270,17 @@ app.get('/api/admin/events/:id/state', (req, res) => {
   const timeline = dbAll('SELECT kind, message, created_at FROM event_timeline WHERE event_id = ? ORDER BY id DESC LIMIT 20', eventId);
 
   const alerts: Array<{ level: string; code: string; message: string }> = [];
-  if (!turnConfigured()) {
+  const cfTurnErr = getTurnError();
+  if (cfTurnErr && getEffectiveTurnConfig().urls.length === 0) {
+    const hint = /cannot find specified key/i.test(cfTurnErr)
+      ? 'Confirm Key ID is the TURN Token ID under Cloudflare Dashboard → Realtime → TURN (not Account ID or SFU App ID).'
+      : 'Verify CLOUDFLARE_TURN_KEY_ID & CLOUDFLARE_TURN_API_TOKEN under Cloudflare Realtime → TURN.';
+    alerts.push({
+      level: 'amber',
+      code: 'turn_error',
+      message: `Cloudflare TURN key failed (${cfTurnErr}). ${hint}`,
+    });
+  } else if (!turnConfigured()) {
     alerts.push({ level: 'amber', code: 'no_turn', message: 'TURN server not configured — cellular/strict-NAT phones may fail to connect.' });
   }
   if (!wallOnline) {
@@ -2041,10 +2311,17 @@ app.get('/api/admin/events/:id/state', (req, res) => {
         alerts.push({ level: 'amber', code: 'poor_quality', message: `${p.display_name} poor network (loss ${ws.packet_loss}%, RTT ${ws.rtt}ms).` });
       }
     }
+    let capParsed: unknown = null;
+    if (typeof p.capture_settings === 'string' && p.capture_settings) {
+      try { capParsed = JSON.parse(p.capture_settings); } catch {}
+    }
     return {
       ...p,
       id: pid,
       slot_no: p.slot_no !== null && p.slot_no !== undefined ? Number(p.slot_no) : null,
+      slot_fit_mode: p.slot_fit_mode || null,
+      facing_mode: p.facing_mode || 'unknown',
+      capture_settings: capParsed,
       name_hidden: p.name_hidden === 1,
       muted_by_admin: p.muted_by_admin === 1,
       has_thumb: Boolean(p.has_thumb),
@@ -2227,6 +2504,24 @@ app.post('/api/admin/events/:id/wall-action', (req, res) => {
     }
     dbRun('UPDATE events SET layout = ? WHERE id = ?', layout, eventId);
     summary = `Changed layout to ${layout}`;
+  } else if (action === 'set_slot_fit') {
+    if (!['super_admin', 'host'].includes(user.role)) {
+      res.status(403).json({ error: 'Only Hosts or Super Admins can change tile fit mode.' });
+      return;
+    }
+    const maxFeeds = Number(event.max_wall_feeds);
+    if (slotNo === null || slotNo < 1 || slotNo > maxFeeds) {
+      res.status(422).json({ error: `Slot must be between 1 and ${maxFeeds}.` });
+      return;
+    }
+    const rawFit = req.body?.fit_mode;
+    const fitVal = rawFit === null || rawFit === undefined || rawFit === '' || rawFit === 'inherit' ? null : String(rawFit);
+    if (fitVal !== null && !['fit', 'fill', 'stretch'].includes(fitVal)) {
+      res.status(422).json({ error: 'Invalid tile fit mode.' });
+      return;
+    }
+    dbRun('UPDATE wall_slots SET fit_mode = ? WHERE event_id = ? AND slot_no = ?', fitVal, eventId, slotNo);
+    summary = `Slot ${slotNo} fit set to ${fitVal ?? 'event default'}`;
   } else if (action === 'preview_start') {
     dbRun('UPDATE participants SET preview_admin_id = NULL WHERE event_id = ? AND preview_admin_id = ?', eventId, user.id);
     dbRun(
@@ -2538,6 +2833,7 @@ app.post('/api/admin/images/:id/replace-everywhere', (req, res) => {
     return;
   }
   dbRun('UPDATE events SET logo_image_id = ?, state_version = state_version + 1 WHERE logo_image_id = ?', repId, imageId);
+  dbRun('UPDATE events SET join_logo_image_id = ?, state_version = state_version + 1 WHERE join_logo_image_id = ?', repId, imageId);
   syncUseCounts();
   logAudit(req, null, user.id, user.display_name, 'image_replaced', `Replaced logo #${imageId} everywhere`);
   res.json({ ok: true });
@@ -2556,13 +2852,14 @@ app.delete('/api/admin/images/:id', (req, res) => {
     res.status(403).json({ error: 'Forbidden.' });
     return;
   }
-  const usedBy = dbAll('SELECT id, title FROM events WHERE logo_image_id = ?', imageId);
+  const usedBy = dbAll('SELECT id, title FROM events WHERE logo_image_id = ? OR join_logo_image_id = ?', imageId, imageId);
   if (usedBy.length > 0 && req.query.force !== '1') {
     res.status(409).json({ error: `Image is currently used by ${usedBy.length} event(s).`, in_use: true, events: usedBy });
     return;
   }
   if (usedBy.length > 0) {
     dbRun('UPDATE events SET logo_image_id = NULL, state_version = state_version + 1 WHERE logo_image_id = ?', imageId);
+    dbRun('UPDATE events SET join_logo_image_id = NULL, state_version = state_version + 1 WHERE join_logo_image_id = ?', imageId);
   }
   dbRun('DELETE FROM media_images WHERE id = ?', imageId);
   const f1 = path.join(UPLOAD_DIR, path.basename(String(img.filename)));
@@ -2759,6 +3056,150 @@ app.get('/api/admin/audit', (req, res) => {
     ...params
   );
   res.json({ logs });
+});
+
+function maskKeyId(val: string): string {
+  if (val.length <= 8) return '*'.repeat(val.length);
+  return `${val.slice(0, 4)}...${val.slice(-4)}`;
+}
+
+function buildTurnStatusPayload() {
+  const override = readTurnOverride();
+  const cf = getCloudflareTurnConfig();
+  const st = getEffectiveTurnConfig();
+  let mode: 'cloudflare' | 'static' | 'none' = 'none';
+  let source: 'db' | 'env' | 'none' = 'none';
+  if (cf) {
+    mode = 'cloudflare';
+    source = cf.source;
+  } else if (st.urls.length > 0) {
+    mode = 'static';
+    source = st.source;
+  } else if (override) {
+    source = 'db';
+  }
+  return {
+    mode,
+    source,
+    configured: turnConfigured(),
+    error: getTurnError(),
+    cf_key_preview: cf ? maskKeyId(cf.keyId) : '',
+    cf_ttl: cf ? cf.ttl : 86400,
+    has_cf_token: Boolean(cf),
+    turn_url: st.urls.join(', '),
+    turn_user: st.user,
+    has_turn_pass: Boolean(st.pass),
+  };
+}
+
+app.get('/api/admin/turn-config', (req, res) => {
+  const actor = requireApiAuth(req, res, ['super_admin'], false);
+  if (!actor) return;
+  res.json(buildTurnStatusPayload());
+});
+
+app.post('/api/admin/turn-config', async (req, res) => {
+  const actor = requireApiAuth(req, res, ['super_admin'], true);
+  if (!actor) return;
+  const action = String(req.body?.action || 'save').trim();
+  if (action === 'clear') {
+    dbRun("DELETE FROM system_settings WHERE setting_key = 'turn_config'");
+    clearCfIceCache();
+    logAudit(req, null, actor.id, actor.display_name, 'turn_config_cleared', 'Cleared saved TURN override');
+    res.json({
+      ok: true,
+      message: 'Saved TURN override cleared. Falling back to .env configuration.',
+      status: buildTurnStatusPayload(),
+    });
+    return;
+  }
+
+  const mode = String(req.body?.mode || 'cloudflare').trim();
+  const existing = readTurnOverride();
+
+  if (mode === 'cloudflare') {
+    const keyId = String(req.body?.cf_key_id || '').trim();
+    let token = String(req.body?.cf_api_token || '').trim();
+    const rawTtl = Number(req.body?.cf_ttl || 86400);
+    const ttl = Number.isFinite(rawTtl) ? Math.max(60, Math.min(86400, Math.floor(rawTtl))) : 86400;
+
+    if (!token && existing?.mode === 'cloudflare' && existing.cf_key_id === keyId) {
+      token = String(existing.cf_api_token || '').trim();
+    }
+    if (!isNonPlaceholderSecret(keyId) || !isNonPlaceholderSecret(token)) {
+      res.status(422).json({ error: 'Both Cloudflare TURN Token ID and API Token are required.' });
+      return;
+    }
+
+    const test = await requestCloudflareIceServers(keyId, token, ttl);
+    if (!test.ok) {
+      const extra = /cannot find specified key/i.test(test.error)
+        ? ' Make sure you copied the TURN Token ID under Cloudflare Dashboard → Realtime → TURN (do not use your Account ID or Realtime SFU App ID, and ensure the Token belongs to that same TURN key).'
+        : '';
+      res.status(400).json({ error: `Cloudflare rejected credentials (${test.error}).${extra}` });
+      return;
+    }
+
+    const payload = { mode: 'cloudflare', cf_key_id: keyId, cf_api_token: token, cf_ttl: ttl };
+    dbRun(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ('turn_config', ?, ?)
+       ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`,
+      JSON.stringify(payload),
+      utcNow()
+    );
+    cfIceCache = {
+      cacheKey: cfCacheKeyFor({ keyId, apiToken: token, ttl }),
+      servers: test.servers,
+      expiresAt: Date.now() + Math.min(43200, Math.max(30, Math.floor(ttl * 0.5))) * 1000,
+      failUntil: 0,
+      lastError: '',
+      loggedFailKey: '',
+      inFlight: null,
+    };
+    logAudit(req, null, actor.id, actor.display_name, 'turn_config_updated', `Verified and saved Cloudflare Realtime TURN key (${maskKeyId(keyId)})`);
+    res.json({
+      ok: true,
+      ice_count: test.servers.length,
+      message: `Cloudflare TURN verified and saved (${test.servers.length} ICE entries generated).`,
+      status: buildTurnStatusPayload(),
+    });
+    return;
+  }
+
+  if (mode === 'static') {
+    const rawUrl = String(req.body?.turn_url || '').trim();
+    const urls = rawUrl.split(',').map((s) => s.trim()).filter(isValidIceUrl);
+    const user = String(req.body?.turn_user || '').trim();
+    let pass = String(req.body?.turn_pass || '').trim();
+    if (!pass && existing?.mode === 'static') {
+      pass = String(existing.turn_pass || '').trim();
+    }
+    if (urls.length === 0) {
+      res.status(422).json({ error: 'Enter at least one valid turn: or turns: URL (e.g. turns:turn.example.com:5349?transport=tcp).' });
+      return;
+    }
+    if (!isNonPlaceholderSecret(user) || !isNonPlaceholderSecret(pass)) {
+      res.status(422).json({ error: 'Static TURN Username and Credential are required.' });
+      return;
+    }
+    const payload = { mode: 'static', turn_url: urls.join(','), turn_user: user, turn_pass: pass };
+    dbRun(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ('turn_config', ?, ?)
+       ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`,
+      JSON.stringify(payload),
+      utcNow()
+    );
+    clearCfIceCache();
+    logAudit(req, null, actor.id, actor.display_name, 'turn_config_updated', 'Saved static TURN configuration');
+    res.json({
+      ok: true,
+      message: 'Static TURN configuration saved.',
+      status: buildTurnStatusPayload(),
+    });
+    return;
+  }
+
+  res.status(422).json({ error: 'Unsupported TURN mode.' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

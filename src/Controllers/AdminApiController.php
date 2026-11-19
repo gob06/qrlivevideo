@@ -39,21 +39,23 @@ class AdminApiController
 
         if ($user['role'] === 'super_admin' || $user['event_scope'] === 'all') {
             $events = Database::fetchAll(
-                "SELECT e.*, m.filename AS logo_filename,
+                "SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename,
                         (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'waiting') AS waiting_count,
                         (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'onair') AS onair_count
                  FROM events e
                  LEFT JOIN media_images m ON m.id = e.logo_image_id
+                 LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
                  ORDER BY e.created_at DESC"
             );
         } else {
             $events = Database::fetchAll(
-                "SELECT e.*, m.filename AS logo_filename,
+                "SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename,
                         (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'waiting') AS waiting_count,
                         (SELECT COUNT(*) FROM participants p WHERE p.event_id = e.id AND p.status = 'onair') AS onair_count
                  FROM events e
                  JOIN admin_event_access aea ON aea.event_id = e.id AND aea.admin_id = ?
                  LEFT JOIN media_images m ON m.id = e.logo_image_id
+                 LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
                  ORDER BY e.created_at DESC",
                 [(int)$user['id']]
             );
@@ -148,6 +150,20 @@ class AdminApiController
             }
         }
 
+        $joinLogoImageId = array_key_exists('join_logo_image_id', $in)
+            ? ($in['join_logo_image_id'] === null || $in['join_logo_image_id'] === '' ? null : (int)$in['join_logo_image_id'])
+            : (isset($event['join_logo_image_id']) && $event['join_logo_image_id'] !== null ? (int)$event['join_logo_image_id'] : null);
+
+        if ($joinLogoImageId !== null) {
+            $jImg = Database::fetchOne(
+                "SELECT id FROM media_images WHERE id = ? AND (visibility = 'shared' OR uploaded_by = ?)",
+                [$joinLogoImageId, (int)$user['id']]
+            );
+            if ($jImg === null) {
+                jsonResponse(['error' => 'Selected join branding image is unavailable.'], 404);
+            }
+        }
+
         $qrShape = isset($in['qr_logo_shape']) && in_array($in['qr_logo_shape'], ['square', 'circle'], true) ? $in['qr_logo_shape'] : $event['qr_logo_shape'];
         $qrFit = isset($in['qr_logo_fit']) && in_array($in['qr_logo_fit'], ['contain', 'cover'], true) ? $in['qr_logo_fit'] : $event['qr_logo_fit'];
         $qrScale = isset($in['qr_logo_scale']) ? max(10, min(22, (int)$in['qr_logo_scale'])) : (int)$event['qr_logo_scale'];
@@ -177,15 +193,30 @@ class AdminApiController
             [$eventId, $eventId]
         );
 
+        $wallFitMode = isset($in['wall_fit_mode']) && in_array($in['wall_fit_mode'], ['fit', 'fill', 'stretch'], true)
+            ? $in['wall_fit_mode']
+            : ($event['wall_fit_mode'] ?? 'fit');
+        $wallTileBg = isset($in['wall_tile_bg']) && in_array($in['wall_tile_bg'], ['blur', 'solid', 'transparent'], true)
+            ? $in['wall_tile_bg']
+            : ($event['wall_tile_bg'] ?? 'blur');
+        $wallTileBgColor = isset($in['wall_tile_bg_color'])
+            ? Validator::hexColor((string)$in['wall_tile_bg_color'], '#090d16', false)
+            : ($event['wall_tile_bg_color'] ?? '#090d16');
+        $mirrorFrontWall = isset($in['mirror_front_wall'])
+            ? ((int)!empty($in['mirror_front_wall']))
+            : ((int)($event['mirror_front_wall'] ?? 0));
+
         Database::execute(
             'UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,
-             layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?,
+             layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?, join_logo_image_id = ?,
+             wall_fit_mode = ?, wall_tile_bg = ?, wall_tile_bg_color = ?, mirror_front_wall = ?,
              qr_logo_shape = ?, qr_logo_fit = ?, qr_logo_scale = ?, qr_logo_padding = ?, qr_logo_bg = ?, qr_fg = ?, qr_bg = ?,
              state_version = state_version + 1, last_action_by = ?, last_action_summary = ?, last_action_at = ?
              WHERE id = ?',
             [
                 $title, $wallKey, $status, $joinLocked, $maxPart, $maxFeeds,
-                $layout, $showLabels, $audioEnabled, $blackout, $logoImageId,
+                $layout, $showLabels, $audioEnabled, $blackout, $logoImageId, $joinLogoImageId,
+                $wallFitMode, $wallTileBg, $wallTileBgColor, $mirrorFrontWall,
                 $qrShape, $qrFit, $qrScale, $qrPadding, $qrLogoBg, $qrFg, $qrBg,
                 $user['display_name'], 'Updated event settings', utcNow(),
                 $eventId,
@@ -195,7 +226,7 @@ class AdminApiController
         Audit::log($eventId, (int)$user['id'], $user['display_name'], 'event_settings', "Updated settings for {$title}");
 
         $updated = Database::fetchOne(
-            'SELECT e.*, m.filename AS logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id WHERE e.id = ?',
+            'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id WHERE e.id = ?',
             [$eventId]
         );
         jsonResponse(['event' => $updated]);
@@ -219,15 +250,19 @@ class AdminApiController
         Auth::requireEventAccess($user, $eventId);
 
         $eventRow = Database::fetchOne(
-            'SELECT e.*, m.filename AS logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id WHERE e.id = ?',
+            'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename
+             FROM events e
+             LEFT JOIN media_images m ON m.id = e.logo_image_id
+             LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+             WHERE e.id = ?',
             [$eventId]
         );
 
         $participants = Database::fetchAll(
             "SELECT p.id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.status,
-                    p.preview_admin_id, p.last_seen, p.joined_at, p.thumb_version,
+                    p.facing_mode, p.capture_settings, p.preview_admin_id, p.last_seen, p.joined_at, p.thumb_version,
                     (p.thumbnail_data IS NOT NULL) AS has_thumb,
-                    ws.slot_no
+                    ws.slot_no, ws.fit_mode AS slot_fit_mode
              FROM participants p
              LEFT JOIN wall_slots ws ON ws.event_id = p.event_id AND ws.participant_id = p.id
              WHERE p.event_id = ? AND p.status IN ('waiting', 'onair')
@@ -266,7 +301,13 @@ class AdminApiController
         );
 
         $alerts = [];
-        if (!Bootstrap::turnConfigured()) {
+        $turnErr = Bootstrap::turnError();
+        if ($turnErr !== '' && !Bootstrap::turnConfigured()) {
+            $hint = stripos($turnErr, 'cannot find specified key') !== false
+                ? 'Confirm Key ID is the TURN Token ID under Cloudflare Dashboard → Realtime → TURN (not Account ID or SFU App ID).'
+                : 'Verify CLOUDFLARE_TURN_KEY_ID & CLOUDFLARE_TURN_API_TOKEN under Cloudflare Realtime → TURN.';
+            $alerts[] = ['level' => 'amber', 'code' => 'turn_error', 'message' => "Cloudflare TURN key failed ({$turnErr}). {$hint}"];
+        } elseif (!Bootstrap::turnConfigured()) {
             $alerts[] = ['level' => 'amber', 'code' => 'no_turn', 'message' => 'TURN server not configured — cellular/strict-NAT phones may fail to connect.'];
         }
         if (!$wallOnline) {
@@ -302,6 +343,9 @@ class AdminApiController
         foreach ($participants as &$p) {
             $p['id'] = (int)$p['id'];
             $p['slot_no'] = $p['slot_no'] !== null ? (int)$p['slot_no'] : null;
+            $p['slot_fit_mode'] = $p['slot_fit_mode'] ?? null;
+            $p['facing_mode'] = $p['facing_mode'] ?? 'unknown';
+            $p['capture_settings'] = !empty($p['capture_settings']) ? json_decode((string)$p['capture_settings'], true) : null;
             $p['name_hidden'] = (int)$p['name_hidden'] === 1;
             $p['muted_by_admin'] = (int)$p['muted_by_admin'] === 1;
             $p['has_thumb'] = (bool)$p['has_thumb'];
@@ -501,6 +545,24 @@ class AdminApiController
                 }
                 Database::execute('UPDATE events SET layout = ? WHERE id = ?', [$layout, $eventId]);
                 $summary = "Changed layout to {$layout}";
+            } elseif ($action === 'set_slot_fit') {
+                if (!in_array($user['role'], ['super_admin', 'host'], true)) {
+                    $pdo->rollBack();
+                    jsonResponse(['error' => 'Only Hosts or Super Admins can change tile fit mode.'], 403);
+                }
+                $maxFeeds = (int)$event['max_wall_feeds'];
+                if ($slotNo === null || $slotNo < 1 || $slotNo > $maxFeeds) {
+                    $pdo->rollBack();
+                    jsonResponse(['error' => "Slot must be between 1 and {$maxFeeds}."], 422);
+                }
+                $rawFit = $in['fit_mode'] ?? null;
+                $fitVal = ($rawFit === null || $rawFit === '' || $rawFit === 'inherit') ? null : (string)$rawFit;
+                if ($fitVal !== null && !in_array($fitVal, ['fit', 'fill', 'stretch'], true)) {
+                    $pdo->rollBack();
+                    jsonResponse(['error' => 'Invalid tile fit mode.'], 422);
+                }
+                Database::execute('UPDATE wall_slots SET fit_mode = ? WHERE event_id = ? AND slot_no = ?', [$fitVal, $eventId, $slotNo]);
+                $summary = 'Slot ' . $slotNo . ' fit set to ' . ($fitVal ?? 'event default');
             } elseif ($action === 'preview_start') {
                 Database::execute('UPDATE participants SET preview_admin_id = NULL WHERE event_id = ? AND preview_admin_id = ?', [$eventId, (int)$user['id']]);
                 Database::execute(
@@ -787,6 +849,7 @@ class AdminApiController
             }
         }
         Database::execute('UPDATE events SET logo_image_id = ?, state_version = state_version + 1 WHERE logo_image_id = ?', [$replacementId, $imageId]);
+        Database::execute('UPDATE events SET join_logo_image_id = ?, state_version = state_version + 1 WHERE join_logo_image_id = ?', [$replacementId, $imageId]);
         ImageBank::syncUseCounts();
         Audit::log(null, (int)$user['id'], $user['display_name'], 'image_replaced', "Replaced logo #{$imageId} everywhere with " . ($replacementId ? "#{$replacementId}" : 'none'));
         jsonResponse(['ok' => true]);
@@ -803,7 +866,7 @@ class AdminApiController
             jsonResponse(['error' => 'Forbidden.'], 403);
         }
 
-        $usedBy = Database::fetchAll('SELECT id, title FROM events WHERE logo_image_id = ?', [$imageId]);
+        $usedBy = Database::fetchAll('SELECT id, title FROM events WHERE logo_image_id = ? OR join_logo_image_id = ?', [$imageId, $imageId]);
         $force = ((string)($_GET['force'] ?? '0')) === '1';
         if ($usedBy && !$force) {
             jsonResponse([
@@ -815,6 +878,7 @@ class AdminApiController
 
         if ($usedBy) {
             Database::execute('UPDATE events SET logo_image_id = NULL, state_version = state_version + 1 WHERE logo_image_id = ?', [$imageId]);
+            Database::execute('UPDATE events SET join_logo_image_id = NULL, state_version = state_version + 1 WHERE join_logo_image_id = ?', [$imageId]);
         }
         Database::execute('DELETE FROM media_images WHERE id = ?', [$imageId]);
         ImageBank::deleteImageFiles($img);
@@ -1010,5 +1074,181 @@ class AdminApiController
             $params
         );
         jsonResponse(['logs' => $rows]);
+    }
+
+    public static function getTurnConfig(): void
+    {
+        Auth::requireApiAuth(['super_admin'], false);
+        jsonResponse(self::buildTurnStatusPayload());
+    }
+
+    private static function maskKeyId(string $val): string
+    {
+        $len = strlen($val);
+        if ($len <= 8) {
+            return str_repeat('*', $len);
+        }
+        return substr($val, 0, 4) . '...' . substr($val, -4);
+    }
+
+    private static function buildTurnStatusPayload(): array
+    {
+        $override = Bootstrap::readTurnOverride();
+        $cf = Bootstrap::effectiveCloudflareConfig();
+        $static = Bootstrap::effectiveStaticTurnConfig();
+
+        $mode = 'none';
+        $source = 'none';
+        if ($cf !== null) {
+            $mode = 'cloudflare';
+            $source = $cf['source'];
+        } elseif (!empty($static['urls'])) {
+            $mode = 'static';
+            $source = $static['source'];
+        } elseif ($override !== null) {
+            $source = 'db';
+        }
+
+        return [
+            'mode' => $mode,
+            'source' => $source,
+            'configured' => Bootstrap::turnConfigured(),
+            'error' => Bootstrap::turnError(),
+            'cf_key_preview' => $cf !== null ? self::maskKeyId($cf['key_id']) : '',
+            'cf_ttl' => $cf !== null ? (int)$cf['ttl'] : 86400,
+            'has_cf_token' => $cf !== null,
+            'turn_url' => !empty($static['urls']) ? implode(', ', $static['urls']) : '',
+            'turn_user' => $static['user'] ?? '',
+            'has_turn_pass' => !empty($static['pass']),
+        ];
+    }
+
+    public static function updateTurnConfig(): void
+    {
+        $actor = Auth::requireApiAuth(['super_admin'], true);
+        $in = jsonInput();
+        $action = trim((string)($in['action'] ?? 'save'));
+
+        if ($action === 'clear') {
+            Database::execute("DELETE FROM system_settings WHERE setting_key = 'turn_config'");
+            Bootstrap::clearTurnCache();
+            Audit::log(null, (int)$actor['id'], $actor['display_name'], 'turn_config_cleared', 'Cleared saved TURN override');
+            jsonResponse([
+                'ok' => true,
+                'message' => 'Saved TURN override cleared. Falling back to .env configuration.',
+                'status' => self::buildTurnStatusPayload(),
+            ]);
+        }
+
+        $mode = trim((string)($in['mode'] ?? 'cloudflare'));
+        $existing = Bootstrap::readTurnOverride();
+
+        if ($mode === 'cloudflare') {
+            $keyId = trim((string)($in['cf_key_id'] ?? ''));
+            $token = trim((string)($in['cf_api_token'] ?? ''));
+            $ttl = max(60, min(86400, (int)($in['cf_ttl'] ?? 86400)));
+
+            if ($token === '' && is_array($existing) && ($existing['mode'] ?? '') === 'cloudflare' && ($existing['cf_key_id'] ?? '') === $keyId) {
+                $token = trim((string)($existing['cf_api_token'] ?? ''));
+            }
+            if (Bootstrap::isPlaceholderSecret($keyId) || Bootstrap::isPlaceholderSecret($token)) {
+                jsonResponse(['error' => 'Both Cloudflare TURN Token ID and API Token are required.'], 422);
+            }
+
+            $test = Bootstrap::requestCloudflareIceServers($keyId, $token, $ttl);
+            if (!$test['ok']) {
+                $err = (string)$test['error'];
+                $extra = stripos($err, 'cannot find specified key') !== false
+                    ? ' Make sure you copied the TURN Token ID under Cloudflare Dashboard → Realtime → TURN (do not use your Account ID or Realtime SFU App ID, and ensure the Token belongs to that same TURN key).'
+                    : '';
+                jsonResponse(['error' => "Cloudflare rejected credentials ({$err}).{$extra}"], 400);
+            }
+
+            $payload = [
+                'mode' => 'cloudflare',
+                'cf_key_id' => $keyId,
+                'cf_api_token' => $token,
+                'cf_ttl' => $ttl,
+            ];
+            Database::upsert('system_settings', ['setting_key' => 'turn_config'], [
+                'setting_value' => json_encode($payload, JSON_UNESCAPED_SLASHES),
+                'updated_at' => utcNow(),
+            ]);
+
+            $cacheKey = hash('sha256', $keyId . ':' . $token . ':' . $ttl);
+            @file_put_contents(Bootstrap::rootPath('storage/cf_turn_cache.json'), json_encode([
+                'key' => $cacheKey,
+                'servers' => $test['servers'],
+                'expires_at' => time() + min(43200, max(30, (int)($ttl * 0.5))),
+                'fail_until' => 0,
+                'last_error' => '',
+            ]));
+
+            Audit::log(null, (int)$actor['id'], $actor['display_name'], 'turn_config_updated', 'Verified and saved Cloudflare Realtime TURN key (' . self::maskKeyId($keyId) . ')');
+            jsonResponse([
+                'ok' => true,
+                'ice_count' => count($test['servers']),
+                'message' => 'Cloudflare TURN verified and saved (' . count($test['servers']) . ' ICE entries generated).',
+                'status' => [
+                    'mode' => 'cloudflare',
+                    'source' => 'db',
+                    'configured' => true,
+                    'error' => '',
+                    'cf_key_preview' => self::maskKeyId($keyId),
+                    'cf_ttl' => $ttl,
+                    'has_cf_token' => true,
+                    'turn_url' => '',
+                    'turn_user' => '',
+                    'has_turn_pass' => false,
+                ],
+            ]);
+        }
+
+        if ($mode === 'static') {
+            $rawUrls = trim((string)($in['turn_url'] ?? ''));
+            $urls = array_values(array_filter(array_map('trim', explode(',', $rawUrls)), fn($u) => Bootstrap::isValidIceUrl($u)));
+            $user = trim((string)($in['turn_user'] ?? ''));
+            $pass = trim((string)($in['turn_pass'] ?? ''));
+            if ($pass === '' && is_array($existing) && ($existing['mode'] ?? '') === 'static') {
+                $pass = trim((string)($existing['turn_pass'] ?? ''));
+            }
+            if (!$urls) {
+                jsonResponse(['error' => 'Enter at least one valid turn: or turns: URL (e.g. turns:turn.example.com:5349?transport=tcp).'], 422);
+            }
+            if (Bootstrap::isPlaceholderSecret($user) || Bootstrap::isPlaceholderSecret($pass)) {
+                jsonResponse(['error' => 'Static TURN Username and Credential are required.'], 422);
+            }
+
+            $payload = [
+                'mode' => 'static',
+                'turn_url' => implode(',', $urls),
+                'turn_user' => $user,
+                'turn_pass' => $pass,
+            ];
+            Database::upsert('system_settings', ['setting_key' => 'turn_config'], [
+                'setting_value' => json_encode($payload, JSON_UNESCAPED_SLASHES),
+                'updated_at' => utcNow(),
+            ]);
+            Bootstrap::clearTurnCache();
+            Audit::log(null, (int)$actor['id'], $actor['display_name'], 'turn_config_updated', 'Saved static TURN configuration');
+            jsonResponse([
+                'ok' => true,
+                'message' => 'Static TURN configuration saved.',
+                'status' => [
+                    'mode' => 'static',
+                    'source' => 'db',
+                    'configured' => true,
+                    'error' => '',
+                    'cf_key_preview' => '',
+                    'cf_ttl' => 86400,
+                    'has_cf_token' => false,
+                    'turn_url' => implode(', ', $urls),
+                    'turn_user' => $user,
+                    'has_turn_pass' => true,
+                ],
+            ]);
+        }
+
+        jsonResponse(['error' => 'Unsupported TURN mode.'], 422);
     }
 }

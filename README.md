@@ -143,23 +143,29 @@ Set `APP_URL=https://your-tunnel-url` and `TRUST_PROXY_HEADERS=true` in `.env` s
 ## 3. OBS Studio Setup Guide (LED Wall Output)
 
 1. **Canvas Resolution**: In OBS **Settings → Video**, set both **Base (Canvas) Resolution** and **Output (Scaled) Resolution** to **`1920x1080`**, Common FPS Values **`30`** (or `60`).
-2. **Add Browser Source**:
+2. **Add Browser Source (1920×1080 Exact 1:1)**:
    - Copy the **OBS Wall URL** from the Admin Event Studio (`/wall/{slug}?key=WALLKEY`).
    - Optional URL parameters:
      - `?bg=transparent` (default), `?bg=black`, or `?bg=green`
      - `?audio=on` or `?audio=off` (overrides admin audio toggle)
      - `?qr=auto` (default: full QR when idle, hidden when live), `?qr=corner` (small QR in top-right while live), `?qr=off`
+     - `?framecheck=1` (overlays frame corner markers and resolution/crop telemetry on every live tile for setup testing)
    - Width: **`1920`**, Height: **`1080`**.
+   - **Transform & Scaling (Important to prevent zooming/cropping)**:
+     - Right-click the Browser Source in OBS → **Transform → Reset Transform** (or **Edit Transform...**), verify **Position** is `0, 0`, **Crop** is `0` on all sides, and **Bounding Box Type** is `No bounds` (or run **Transform → Fit to screen**), keeping source scale at **100%**.
+     - The wall page performs **zero** `devicePixelRatio`, `zoom`, or `transform: scale(...)` tricks — pixel dimensions match `1920×1080` 1:1.
    - Check **"Control audio via OBS"** if you plan to route audience audio to the PA/stream; keep the OBS Browser Source muted in the Audio Mixer during silent QR/video walls to prevent feedback.
    - **Uncheck** *"Shutdown source when not visible"* so the WebRTC connections and heartbeat stay warm when switching OBS scenes.
    - *"Refresh browser when scene becomes active"*: Leave unchecked during live shows to avoid dropping active WebRTC streams.
-3. **Custom CSS Tip**: The page is transparent by default (`?bg=transparent`), so you can place a branded background video/loop behind the Browser Source in OBS. If you want an extra subtle vignette or custom font override, add it in OBS Browser Source **Custom CSS**.
-4. **Outputting to the Venue LED Wall**:
+3. **Fit Mode & Tile Background**:
+   - Wall tiles default to **Fit (no crop)** (`object-fit: contain`) with **Blurred video fill** (`wall_tile_bg=blur`), so portrait or 4:3 phones never get zoomed in or clipped. Hosts can adjust **Fit Mode** (`Fit`, `Fill`, or `Stretch` under Advanced) and **Tile Background** (`Blurred`, `Solid`, `Transparent`) globally in Studio Settings or per slot, plus **"Mirror front cameras on the wall"** (default off).
+4. **Custom CSS Tip**: Leave OBS Custom CSS empty for default transparency (`?bg=transparent`), or use OBS scenes behind the Browser Source.
+5. **Outputting to the Venue LED Wall**:
    - Connect the venue LED processor (Novastar / Brompton / Colorlight) via HDMI/DP as an extended display (`1920×1080`).
    - Right-click the OBS Program Preview → **Fullscreen Projector (Preview)** → select the LED wall display.
-5. **Recommended Machine Specs & Network Advice**:
+6. **Recommended Machine Specs & Network Advice**:
    - **OBS Machine**: Quad-core CPU or better (e.g., Apple M1+ or Intel i5/i7 11th gen+), 16 GB RAM, hardware video decode enabled, **wired Gigabit Ethernet** (never run the OBS wall PC on venue Wi-Fi).
-   - **4 Simultaneous Feeds**: ~6 Mbps total downstream at OBS (1.5 Mbps cap per phone).
+   - **4 Simultaneous Feeds**: ~8 Mbps total downstream at OBS (~2 Mbps target per phone with resolution preservation).
    - **Network Backup Plan**: Always keep a fallback local media source (looping brand graphic / static high-res QR PNG exported from Admin) in an OBS scene directly underneath or one hotkey away in case venue internet drops.
 
 ---
@@ -221,12 +227,20 @@ The Admin Monitor Dashboard automatically alerts you if neither Cloudflare TURN 
    - Toggle airplane mode briefly on a phone and verify automatic reconnect.
    - Close the event and verify audience sessions end and thumbnails are wiped.
 7. **OBS Browser Source Verification**:
-   - Load `/wall/{slug}?key=WALLKEY` in OBS at `1920×1080`, verify transparent background over an OBS backdrop, zero scrollbars, and smooth transitions.
+   - Load `/wall/{slug}?key=WALLKEY` in OBS at `1920×1080`, verify **Transform → Reset Transform** (`100%` scale, zero crop), transparent background over an OBS backdrop, zero scrollbars, and smooth transitions.
+8. **Real-Camera Full-Frame & Zero-Crop Checklist**:
+   - Open **Frame Check** (`/admin/frame-check`) in Admin and enable **Frame check** on a joined phone to compare captured dimensions, aspect ratio, zoom (`1x` / min), tile size, and `Visible 100%` telemetry.
+   - **Printed Ruler / Framing Chart Test**: Point the phone camera at a printed grid/ruler or wall frame edges, compare side-by-side against the phone's built-in 1x Camera app, and verify all 4 outer markers remain equally visible on: (a) the audience phone preview, (b) Admin Private Preview & Monitor, and (c) the OBS Wall (`/wall/...?framecheck=1`).
+   - **iOS Safari**: Test front & rear cameras in portrait and landscape; rotate mid-stream and confirm no stretching or manual cropping.
+   - **Android Chrome**: Test front & rear cameras (including switching rear lenses via the Camera `<select>` dropdown); confirm main 1x lens is selected by default and zoom slider starts at minimum wide value when supported.
+   - **Mirror Check**: Hold up readable printed text to the front camera — local phone preview mirrors like a selfie mirror, while Admin Monitor & OBS Wall show readable unmirrored text unless **"Mirror front cameras on the wall"** is enabled.
+   - **Multi-Tile Layouts**: Put 2 phones on air in `split2` and 4 in `grid4`; mix portrait and landscape phones and verify Fit (blurred fill) shows 100% of every frame, switching cleanly to Fill (crops) or per-slot override on demand.
 
 ---
 
-## 6. Known Limitations & Scaling Notes
+## 6. Known Limitations & Browser Camera Notes
 
+- **Mobile Browser Field-of-View vs Native Camera App**: On some iOS and Android devices, Safari/Chrome WebRTC `getUserMedia` uses a binned or stabilized video sensor mode (typically 16:9 `1280×720` or 4:3) whose maximum angle of view can be slightly narrower than the device's native OEM Camera photo mode, and browsers on iOS may not expose hardware ultra-wide lenses or `MediaTrackCapabilities.zoom` to web pages. Requesting ideal constraints without forcing mismatched `aspectRatio` or `exact` dimensions ensures the widest uncropped WebRTC sensor mode the browser allows.
 - **P2P Topology Limit (~4 simultaneous on-air feeds)**: Because each on-air phone sends a direct WebRTC peer connection to the OBS Browser Source (and optionally an admin monitor/preview), CPU and uplink bandwidth scale linearly on the OBS machine and phones. Keep `max_wall_feeds <= 4`.
 - **Polling Overhead at High Lobby Counts**: Shared hosting HTTP polling every 2 seconds per idle phone works comfortably up to ~50–150 waiting participants depending on PHP-FPM worker limits.
 - **When to Move to an SFU**: If you need **more than 4 simultaneous feeds on screen**, **hundreds of simultaneous waiting/streaming participants**, or **server-side compositing/recording**, migrate the WebRTC transport to an SFU such as **LiveKit** or **Janus** running on dedicated cloud/VPS infrastructure.

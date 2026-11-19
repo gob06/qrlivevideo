@@ -22,7 +22,9 @@ export function sanitizeIceServers(rawList) {
   return out.length > 0 ? out : [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 }
 
-export function applyBitrateCap(pc, maxBps = 1500000) {
+export function applyVideoSenderParameters(pc, opts = {}) {
+  const maxBps = Number(opts.maxBitrate || 2000000);
+  const degradationPreference = opts.degradationPreference || 'maintain-resolution';
   for (const sender of pc.getSenders()) {
     if (sender.track && sender.track.kind === 'video') {
       try {
@@ -31,12 +33,146 @@ export function applyBitrateCap(pc, maxBps = 1500000) {
           params.encodings = [{}];
         }
         params.encodings[0].maxBitrate = maxBps;
-        sender.setParameters(params).catch(() => {});
+        // Keep aspect ratio untouched — never alter resolution unless caller explicitly requests uniform scaling
+        if (opts.scaleResolutionDownBy && opts.scaleResolutionDownBy >= 1) {
+          params.encodings[0].scaleResolutionDownBy = opts.scaleResolutionDownBy;
+        }
+        params.degradationPreference = degradationPreference;
+        sender.setParameters(params).catch(() => {
+          // Fallback if browser rejects degradationPreference
+          try {
+            const retry = sender.getParameters();
+            if (!retry.encodings || retry.encodings.length === 0) retry.encodings = [{}];
+            retry.encodings[0].maxBitrate = maxBps;
+            delete retry.degradationPreference;
+            sender.setParameters(retry).catch(() => {});
+          } catch {}
+        });
       } catch {
         // Some mobile browsers reject partial setParameters
       }
     }
   }
+}
+
+export function applyBitrateCap(pc, maxBps = 2000000) {
+  applyVideoSenderParameters(pc, { maxBitrate: maxBps, degradationPreference: 'maintain-resolution' });
+}
+
+export function preferVideoCodecs(pc) {
+  try {
+    if (typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return;
+    const caps = RTCRtpSender.getCapabilities('video');
+    if (!caps || !Array.isArray(caps.codecs) || caps.codecs.length === 0) return;
+
+    const h264 = [];
+    const vp8 = [];
+    const rest = [];
+    for (const c of caps.codecs) {
+      const mime = String(c.mimeType || '').toLowerCase();
+      if (mime === 'video/h264') h264.push(c);
+      else if (mime === 'video/vp8') vp8.push(c);
+      else rest.push(c);
+    }
+    const ordered = [...h264, ...vp8, ...rest];
+    for (const t of pc.getTransceivers()) {
+      if (t.sender?.track?.kind === 'video' && typeof t.setCodecPreferences === 'function') {
+        try {
+          t.setCodecPreferences(ordered);
+        } catch {
+          // Ignore unsupported codec preference sets on older browsers
+        }
+      }
+    }
+  } catch {
+    // Ignore capability lookup errors
+  }
+}
+
+export function formatAspectLabel(w, h) {
+  if (!w || !h) return '—';
+  const r = w / h;
+  const known = [
+    [16 / 9, '16:9'],
+    [9 / 16, '9:16'],
+    [4 / 3, '4:3'],
+    [3 / 4, '3:4'],
+    [1, '1:1'],
+    [16 / 10, '16:10'],
+    [21 / 9, '21:9'],
+  ];
+  for (const [val, lbl] of known) {
+    if (Math.abs(r - val) < 0.035) return `${r.toFixed(2)} (${lbl})`;
+  }
+  return r.toFixed(2);
+}
+
+export function computeVideoFrameMetrics(videoEl, containerEl, fitMode = 'fit') {
+  const vw = Number(videoEl?.videoWidth || 0);
+  const vh = Number(videoEl?.videoHeight || 0);
+  const rect = containerEl ? containerEl.getBoundingClientRect() : { width: 0, height: 0 };
+  const cw = Number(rect.width || 0);
+  const ch = Number(rect.height || 0);
+
+  if (!vw || !vh || !cw || !ch) {
+    return {
+      videoWidth: vw,
+      videoHeight: vh,
+      aspectRatio: vw && vh ? vw / vh : 0,
+      aspectLabel: formatAspectLabel(vw, vh),
+      tileWidth: Math.round(cw),
+      tileHeight: Math.round(ch),
+      visiblePct: 100,
+      croppedPct: 0,
+      distorted: false,
+      fitMode,
+      boxLeft: 0,
+      boxTop: 0,
+      boxWidth: Math.round(cw),
+      boxHeight: Math.round(ch),
+    };
+  }
+
+  let rw = cw;
+  let rh = ch;
+  if (fitMode === 'fit') {
+    const s = Math.min(cw / vw, ch / vh);
+    rw = vw * s;
+    rh = vh * s;
+  } else if (fitMode === 'fill') {
+    const s = Math.max(cw / vw, ch / vh);
+    rw = vw * s;
+    rh = vh * s;
+  }
+
+  const visW = Math.min(cw, rw);
+  const visH = Math.min(ch, rh);
+  const visiblePct = fitMode === 'fill'
+    ? Math.max(0, Math.min(100, ((visW * visH) / (rw * rh)) * 100))
+    : 100;
+  const croppedPct = Math.max(0, Math.round((100 - visiblePct) * 10) / 10);
+
+  const boxWidth = Math.min(cw, rw);
+  const boxHeight = Math.min(ch, rh);
+  const boxLeft = (cw - boxWidth) / 2;
+  const boxTop = (ch - boxHeight) / 2;
+
+  return {
+    videoWidth: vw,
+    videoHeight: vh,
+    aspectRatio: vw / vh,
+    aspectLabel: formatAspectLabel(vw, vh),
+    tileWidth: Math.round(cw),
+    tileHeight: Math.round(ch),
+    visiblePct: Math.round(visiblePct * 10) / 10,
+    croppedPct,
+    distorted: fitMode === 'stretch' && Math.abs(vw / vh - cw / ch) > 0.02,
+    fitMode,
+    boxLeft: Math.round(boxLeft),
+    boxTop: Math.round(boxTop),
+    boxWidth: Math.round(boxWidth),
+    boxHeight: Math.round(boxHeight),
+  };
 }
 
 export async function collectPeerStats(pc, prevBytesMap, key) {

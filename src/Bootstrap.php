@@ -153,43 +153,110 @@ class Bootstrap
         return $scheme . '://' . $host;
     }
 
-    private static function isValidIceUrl(string $url): bool
+    public static function isValidIceUrl(string $url): bool
     {
         return (bool)preg_match('/^(stuns?|turns?):[a-z0-9.\[\]-]+(:\d+)?(\?[^\s]*)?$/i', trim($url));
     }
 
-    private static function fetchCloudflareIceServers(): array
+    public static function isPlaceholderSecret(string $val): bool
     {
-        $keyId = trim(self::env('CLOUDFLARE_TURN_KEY_ID', ''));
-        $token = trim(self::env('CLOUDFLARE_TURN_API_TOKEN', ''));
-        if ($keyId === '' || $token === '' || preg_match('/not yet|placeholder|replace_with/i', $keyId . ' ' . $token)) {
-            return [];
-        }
-        $ttl = max(60, min(86400, (int)self::env('CLOUDFLARE_TURN_TTL', '86400')));
-        $cachePath = self::rootPath('storage/cf_turn_cache.json');
-        $cacheKey = hash('sha256', $keyId . ':' . $ttl);
+        $s = trim($val);
+        return $s === '' || (bool)preg_match('/not yet|placeholder|replace_with|your_|change_me|^x{3,}$|^y{3,}$/i', $s);
+    }
 
-        if (is_file($cachePath)) {
-            $cached = json_decode((string)@file_get_contents($cachePath), true);
-            if (is_array($cached) && ($cached['key'] ?? '') === $cacheKey) {
-                if (($cached['expires_at'] ?? 0) > time() && !empty($cached['servers'])) {
-                    return $cached['servers'];
-                }
-                if (($cached['fail_until'] ?? 0) > time()) {
-                    return $cached['servers'] ?? [];
+    public static function readTurnOverride(): ?array
+    {
+        static $cached = null;
+        static $loaded = false;
+        if ($loaded) {
+            return $cached;
+        }
+        $loaded = true;
+        try {
+            $row = Database::fetchOne("SELECT setting_value FROM system_settings WHERE setting_key = 'turn_config'");
+            if ($row && !empty($row['setting_value'])) {
+                $parsed = json_decode((string)$row['setting_value'], true);
+                if (is_array($parsed) && in_array($parsed['mode'] ?? '', ['cloudflare', 'static'], true)) {
+                    $cached = $parsed;
+                    return $cached;
                 }
             }
+        } catch (\Throwable $e) {
+            // DB may not exist yet (e.g. installer)
         }
+        return null;
+    }
 
+    public static function clearTurnCache(): void
+    {
+        @unlink(self::rootPath('storage/cf_turn_cache.json'));
+    }
+
+    public static function effectiveCloudflareConfig(): ?array
+    {
+        $override = self::readTurnOverride();
+        if ($override !== null) {
+            if (($override['mode'] ?? '') !== 'cloudflare') {
+                return null;
+            }
+            $keyId = trim((string)($override['cf_key_id'] ?? ''));
+            $token = trim((string)($override['cf_api_token'] ?? ''));
+            if (self::isPlaceholderSecret($keyId) || self::isPlaceholderSecret($token)) {
+                return null;
+            }
+            $ttl = max(60, min(86400, (int)($override['cf_ttl'] ?? 86400)));
+            return ['key_id' => $keyId, 'api_token' => $token, 'ttl' => $ttl, 'source' => 'db'];
+        }
+        $keyId = trim(self::env('CLOUDFLARE_TURN_KEY_ID', ''));
+        $token = trim(self::env('CLOUDFLARE_TURN_API_TOKEN', ''));
+        if (self::isPlaceholderSecret($keyId) || self::isPlaceholderSecret($token)) {
+            return null;
+        }
+        $ttl = max(60, min(86400, (int)self::env('CLOUDFLARE_TURN_TTL', '86400')));
+        return ['key_id' => $keyId, 'api_token' => $token, 'ttl' => $ttl, 'source' => 'env'];
+    }
+
+    public static function effectiveStaticTurnConfig(): array
+    {
+        $override = self::readTurnOverride();
+        if ($override !== null) {
+            if (($override['mode'] ?? '') !== 'static') {
+                return ['urls' => [], 'user' => '', 'pass' => '', 'source' => 'none'];
+            }
+            $turnRaw = trim((string)($override['turn_url'] ?? ''));
+            $turnUrls = array_values(array_filter(array_map('trim', explode(',', $turnRaw)), fn($u) => self::isValidIceUrl($u)));
+            $user = trim((string)($override['turn_user'] ?? ''));
+            $pass = trim((string)($override['turn_pass'] ?? ''));
+            if ($turnUrls && !self::isPlaceholderSecret($user) && !self::isPlaceholderSecret($pass)) {
+                return ['urls' => $turnUrls, 'user' => $user, 'pass' => $pass, 'source' => 'db'];
+            }
+            return ['urls' => [], 'user' => '', 'pass' => '', 'source' => 'none'];
+        }
+        $turnRaw = trim(self::env('TURN_URL', ''));
+        $turnUrls = array_values(array_filter(array_map('trim', explode(',', $turnRaw)), fn($u) => self::isValidIceUrl($u)));
+        $user = trim(self::env('TURN_USER', ''));
+        $pass = trim(self::env('TURN_PASS', ''));
+        if ($turnUrls && !self::isPlaceholderSecret($user) && !self::isPlaceholderSecret($pass)) {
+            return ['urls' => $turnUrls, 'user' => $user, 'pass' => $pass, 'source' => 'env'];
+        }
+        return ['urls' => [], 'user' => '', 'pass' => '', 'source' => 'none'];
+    }
+
+    public static function requestCloudflareIceServers(string $keyId, string $token, int $ttl = 86400): array
+    {
+        $ttl = max(60, min(86400, $ttl));
         $url = 'https://rtc.live.cloudflare.com/v1/turn/keys/' . rawurlencode($keyId) . '/credentials/generate-ice-servers';
         $body = json_encode(['ttl' => $ttl]);
-        $raw = false;
+        $raw = '';
+        $httpCode = 0;
+        $transportErr = '';
+
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_POST => true,
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 4,
+                CURLOPT_TIMEOUT => 5,
                 CURLOPT_HTTPHEADER => [
                     'Authorization: Bearer ' . $token,
                     'Content-Type: application/json',
@@ -197,29 +264,40 @@ class Bootstrap
                 CURLOPT_POSTFIELDS => $body,
             ]);
             $res = curl_exec($ch);
-            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            if ($code >= 200 && $code < 300 && is_string($res)) {
-                $raw = $res;
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($res === false) {
+                $transportErr = curl_error($ch) ?: 'cURL request failed';
+            } else {
+                $raw = (string)$res;
             }
+            curl_close($ch);
         } else {
             $ctx = stream_context_create([
                 'http' => [
                     'method' => 'POST',
                     'header' => "Authorization: Bearer {$token}\r\nContent-Type: application/json\r\n",
                     'content' => $body,
-                    'timeout' => 4,
+                    'timeout' => 5,
                     'ignore_errors' => true,
                 ],
             ]);
             $res = @file_get_contents($url, false, $ctx);
+            if (isset($http_response_header) && is_array($http_response_header)) {
+                foreach ($http_response_header as $hdr) {
+                    if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $hdr, $m)) {
+                        $httpCode = (int)$m[1];
+                    }
+                }
+            }
             if (is_string($res)) {
                 $raw = $res;
+            } else {
+                $transportErr = 'HTTP request failed';
             }
         }
 
         $servers = [];
-        if (is_string($raw)) {
+        if ($httpCode >= 200 && $httpCode < 300 && $raw !== '') {
             $json = json_decode($raw, true);
             $ice = $json['iceServers'] ?? null;
             if (is_array($ice)) {
@@ -237,11 +315,60 @@ class Bootstrap
             }
         }
 
+        $err = '';
+        if (!$servers) {
+            if ($httpCode >= 400) {
+                $snippet = trim(substr(preg_replace('/\s+/', ' ', $raw), 0, 140));
+                $err = $snippet !== '' ? "HTTP {$httpCode}: {$snippet}" : "HTTP {$httpCode}";
+            } elseif ($transportErr !== '') {
+                $err = $transportErr;
+            } else {
+                $err = 'Cloudflare returned no valid ICE servers';
+            }
+        }
+
+        return [
+            'ok' => count($servers) > 0,
+            'http_code' => $httpCode,
+            'servers' => $servers,
+            'error' => $err,
+        ];
+    }
+
+    private static function fetchCloudflareIceServers(): array
+    {
+        $cf = self::effectiveCloudflareConfig();
+        if ($cf === null) {
+            return [];
+        }
+        $keyId = $cf['key_id'];
+        $token = $cf['api_token'];
+        $ttl = (int)$cf['ttl'];
+        $cachePath = self::rootPath('storage/cf_turn_cache.json');
+        $cacheKey = hash('sha256', $keyId . ':' . $token . ':' . $ttl);
+
+        if (is_file($cachePath)) {
+            $cached = json_decode((string)@file_get_contents($cachePath), true);
+            if (is_array($cached) && ($cached['key'] ?? '') === $cacheKey) {
+                if (($cached['expires_at'] ?? 0) > time() && !empty($cached['servers'])) {
+                    return $cached['servers'];
+                }
+                if (($cached['fail_until'] ?? 0) > time()) {
+                    return $cached['servers'] ?? [];
+                }
+            }
+        }
+
+        $res = self::requestCloudflareIceServers($keyId, $token, $ttl);
+        $servers = $res['servers'];
+        $httpCode = (int)$res['http_code'];
+        $isClientErr = $httpCode >= 400 && $httpCode < 500;
         $payload = [
             'key' => $cacheKey,
             'servers' => $servers ?: ($cached['servers'] ?? []),
             'expires_at' => $servers ? time() + min(43200, max(30, (int)($ttl * 0.5))) : 0,
-            'fail_until' => $servers ? 0 : time() + 30,
+            'fail_until' => $servers ? 0 : time() + ($isClientErr ? 300 : 30),
+            'last_error' => $servers ? '' : (string)$res['error'],
         ];
         @file_put_contents($cachePath, json_encode($payload));
         return $payload['servers'];
@@ -258,32 +385,44 @@ class Bootstrap
         $stunRaw = self::env('STUN_URLS', implode(',', $defaultStun));
         $stunUrls = array_values(array_filter(array_map('trim', explode(',', $stunRaw)), fn($u) => self::isValidIceUrl($u)));
         $servers[] = ['urls' => $stunUrls ?: $defaultStun];
-        $turnRaw = trim(self::env('TURN_URL', ''));
-        $turnUrls = array_values(array_filter(array_map('trim', explode(',', $turnRaw)), fn($u) => self::isValidIceUrl($u)));
-        if ($turnUrls) {
-            $entry = ['urls' => count($turnUrls) === 1 ? $turnUrls[0] : $turnUrls];
-            $user = self::env('TURN_USER', '');
-            $pass = self::env('TURN_PASS', '');
-            if ($user !== '') {
-                $entry['username'] = $user;
-            }
-            if ($pass !== '') {
-                $entry['credential'] = $pass;
-            }
-            $servers[] = $entry;
+        $turnCfg = self::effectiveStaticTurnConfig();
+        if (!empty($turnCfg['urls'])) {
+            $servers[] = [
+                'urls' => count($turnCfg['urls']) === 1 ? $turnCfg['urls'][0] : $turnCfg['urls'],
+                'username' => $turnCfg['user'],
+                'credential' => $turnCfg['pass'],
+            ];
         }
         return $servers;
     }
 
+    public static function turnError(): string
+    {
+        $cf = self::effectiveCloudflareConfig();
+        if ($cf === null) {
+            return '';
+        }
+        $cachePath = self::rootPath('storage/cf_turn_cache.json');
+        $cacheKey = hash('sha256', $cf['key_id'] . ':' . $cf['api_token'] . ':' . $cf['ttl']);
+        if (is_file($cachePath)) {
+            $cached = json_decode((string)@file_get_contents($cachePath), true);
+            if (is_array($cached) && ($cached['key'] ?? '') === $cacheKey && empty($cached['servers']) && !empty($cached['last_error'])) {
+                return (string)$cached['last_error'];
+            }
+        }
+        return '';
+    }
+
     public static function turnConfigured(): bool
     {
-        $keyId = trim(self::env('CLOUDFLARE_TURN_KEY_ID', ''));
-        $token = trim(self::env('CLOUDFLARE_TURN_API_TOKEN', ''));
-        if ($keyId !== '' && $token !== '' && !preg_match('/not yet|placeholder|replace_with/i', $keyId . ' ' . $token)) {
+        $staticCfg = self::effectiveStaticTurnConfig();
+        if (!empty($staticCfg['urls'])) {
             return true;
         }
-        $turnUrls = array_filter(array_map('trim', explode(',', self::env('TURN_URL', ''))), fn($u) => self::isValidIceUrl($u));
-        return count($turnUrls) > 0;
+        if (self::effectiveCloudflareConfig() !== null) {
+            return self::turnError() === '';
+        }
+        return false;
     }
 }
 

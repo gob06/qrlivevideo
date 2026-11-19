@@ -15,17 +15,27 @@ class PageController
 {
     public static function renderAudience(string $slug): void
     {
-        $event = Database::fetchOne('SELECT id, slug, title, status, join_locked FROM events WHERE slug = ?', [$slug]);
+        $event = Database::fetchOne(
+            'SELECT e.id, e.slug, e.title, e.status, e.join_locked, m.filename AS logo_filename, jm.filename AS join_logo_filename
+             FROM events e
+             LEFT JOIN media_images m ON m.id = e.logo_image_id
+             LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+             WHERE e.slug = ?',
+            [$slug]
+        );
         if ($event === null) {
             http_response_code(404);
             echo '<!doctype html><html><body style="background:#0a0d14;color:#f8fafc;font-family:sans-serif;padding:2rem;"><h1>Event not found</h1><p>Check the QR code or link and try again.</p></body></html>';
             return;
         }
+        $brandFile = $event['join_logo_filename'] ?: $event['logo_filename'];
+        $brandLogoUrl = $brandFile ? '/uploads/logos/' . rawurlencode($brandFile) : null;
         $config = [
             'eventSlug' => $event['slug'],
             'eventTitle' => $event['title'],
             'eventStatus' => $event['status'],
             'joinLocked' => (int)$event['join_locked'] === 1,
+            'brandLogoUrl' => $brandLogoUrl,
             'signalingMode' => Bootstrap::env('SIGNALING_MODE', 'poll'),
             'iceServers' => Bootstrap::iceServersConfig(),
             'pollIdleMs' => Bootstrap::$config['poll_interval_idle_ms'],

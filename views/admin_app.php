@@ -20,6 +20,7 @@ use function App\e;
       <nav class="adm-nav" aria-label="Main Navigation">
         <a href="/admin/events" class="adm-nav-link" data-nav="/admin/events">Events</a>
         <a href="/admin/images" class="adm-nav-link" data-nav="/admin/images">Image Bank</a>
+        <a href="/admin/frame-check" class="adm-nav-link" data-nav="/admin/frame-check">Frame Check</a>
         <?php if ($appConfig['user']['role'] === 'super_admin'): ?>
           <a href="/admin/accounts" class="adm-nav-link" data-nav="/admin/accounts">Accounts</a>
           <a href="/admin/audit" class="adm-nav-link" data-nav="/admin/audit">Audit Log</a>

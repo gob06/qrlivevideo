@@ -1,7 +1,10 @@
 import { renderBrandedQR } from './qr-brand.js';
 import { collectPeerStats, sanitizeIceServers, startAdaptiveTransport } from './webrtc-common.js';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
+const urlParams = new URLSearchParams(window.location.search);
+const frameCheckEnabled = urlParams.get('framecheck') === '1';
 
 const el = {
   qrIdle: document.getElementById('wall-qr-idle'),
@@ -17,7 +20,7 @@ const peers = new Map(); // participantId -> { pc, pendingCandidates, stream }
 const earlyCandidates = new Map(); // participantId -> RTCIceCandidateInit[]
 const slotSeenAt = new Map(); // participantId -> timestamp ms
 const lastRenegAt = new Map(); // participantId -> timestamp ms
-const tiles = new Map(); // participantId -> { root, video, nameEl, msgEl, lowerEl, connEl }
+const tiles = new Map(); // participantId -> wall-renderer tile
 const prevBytesMap = new Map();
 let lastQrSig = '';
 let activeSlots = [];
@@ -75,40 +78,11 @@ function closePeer(pid) {
   }
 }
 
-function createOrUpdateTile(slot, idx, showLabels) {
+function createOrUpdateTile(slot, idx, showLabels, state) {
   let tile = tiles.get(slot.participant_id);
   if (!tile) {
-    const root = document.createElement('div');
-    root.className = 'wall-tile';
-
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.setAttribute('playsinline', '');
-    video.setAttribute('webkit-playsinline', '');
-    video.muted = true; // Starts muted for zero-gesture autoplay; unmuted below if audio allowed
-
-    const connEl = document.createElement('div');
-    connEl.className = 'wall-tile-connecting';
-    connEl.textContent = 'Connecting camera...';
-
-    video.addEventListener('loadeddata', () => { connEl.hidden = true; });
-    video.addEventListener('playing', () => { connEl.hidden = true; });
-
-    const lowerEl = document.createElement('div');
-    lowerEl.className = 'wall-lower-third';
-    const nameEl = document.createElement('div');
-    nameEl.className = 'wall-lower-name';
-    const msgEl = document.createElement('div');
-    msgEl.className = 'wall-lower-msg';
-    lowerEl.appendChild(nameEl);
-    lowerEl.appendChild(msgEl);
-
-    root.appendChild(video);
-    root.appendChild(connEl);
-    root.appendChild(lowerEl);
-    tiles.set(slot.participant_id, { root, video, nameEl, msgEl, lowerEl, connEl });
-    tile = tiles.get(slot.participant_id);
+    tile = createWallTile();
+    tiles.set(slot.participant_id, tile);
   }
 
   tile.root.dataset.pos = String(idx);
@@ -117,17 +91,26 @@ function createOrUpdateTile(slot, idx, showLabels) {
   tile.msgEl.hidden = !slot.message;
   tile.lowerEl.hidden = !showLabels;
 
+  const fitMode = slot.fit_mode || state.wall_fit_mode || 'fit';
+  const tileBg = state.wall_tile_bg || 'blur';
+  const tileBgColor = state.wall_tile_bg_color || '#090d16';
+  const mirrored = Boolean(state.mirror_front_wall) && slot.facing_mode === 'user';
+
+  updateWallTileAppearance(tile, {
+    fitMode,
+    tileBg,
+    tileBgColor,
+    mirrored,
+    frameCheck: frameCheckEnabled,
+    captureInfo: slot.capture_settings || null,
+  });
+
   const shouldMute = !wallAudioEnabled || !!slot.muted;
   tile.video.muted = shouldMute;
 
   const pEntry = peers.get(slot.participant_id);
   if (pEntry && pEntry.stream) {
-    if (tile.video.srcObject !== pEntry.stream) {
-      tile.video.srcObject = pEntry.stream;
-    }
-    if (tile.video.readyState >= 2) {
-      tile.connEl.hidden = true;
-    }
+    attachStreamToWallTile(tile, pEntry.stream);
     tile.video.play().catch(() => {
       // Fallback: if browser blocks unmuted autoplay outside OBS, keep video playing muted
       tile.video.muted = true;
@@ -177,10 +160,7 @@ async function handleOffer(pid, sdp) {
     entry.stream = stream;
     const tile = tiles.get(pid);
     if (tile) {
-      if (tile.video.srcObject !== stream) {
-        tile.video.srcObject = stream;
-      }
-      tile.connEl.hidden = true;
+      attachStreamToWallTile(tile, stream);
       tile.video.play().catch(() => {
         tile.video.muted = true;
         tile.video.play().catch(() => {});
@@ -297,7 +277,7 @@ async function handleWallState(state) {
       if (!slotSeenAt.has(slot.participant_id)) {
         slotSeenAt.set(slot.participant_id, now);
       }
-      const tile = createOrUpdateTile(slot, idx, !!state.show_labels);
+      const tile = createOrUpdateTile(slot, idx, !!state.show_labels, state);
       if (tile.root.parentNode !== el.grid) {
         el.grid.appendChild(tile.root);
       }

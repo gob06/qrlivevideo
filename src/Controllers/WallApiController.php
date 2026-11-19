@@ -166,7 +166,7 @@ class WallApiController
     {
         $eid = (int)$event['id'];
         $slots = Database::fetchAll(
-            "SELECT ws.slot_no, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.status
+            "SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.facing_mode, p.capture_settings, p.status
              FROM wall_slots ws
              JOIN participants p ON p.id = ws.participant_id
              WHERE ws.event_id = ? AND p.status = 'onair'
@@ -195,6 +195,10 @@ class WallApiController
             'max_wall_feeds' => (int)$event['max_wall_feeds'],
             'show_labels' => (int)$event['show_labels'] === 1,
             'audio_enabled' => (int)$event['audio_enabled'] === 1,
+            'wall_fit_mode' => $event['wall_fit_mode'] ?? 'fit',
+            'wall_tile_bg' => $event['wall_tile_bg'] ?? 'blur',
+            'wall_tile_bg_color' => $event['wall_tile_bg_color'] ?? '#090d16',
+            'mirror_front_wall' => ((int)($event['mirror_front_wall'] ?? 0)) === 1,
             'qr' => [
                 'joinUrl' => Bootstrap::baseUrl() . '/join/' . rawurlencode($event['slug']),
                 'logoUrl' => $event['logo_filename'] ? '/uploads/logos/' . rawurlencode($event['logo_filename']) : null,
@@ -212,6 +216,9 @@ class WallApiController
                 'display_name' => (int)$s['name_hidden'] === 1 ? 'Guest' : $s['display_name'],
                 'message' => (int)$s['name_hidden'] === 1 ? '' : $s['message'],
                 'muted' => (int)$s['muted_by_admin'] === 1,
+                'fit_mode' => $s['fit_mode'] ?? null,
+                'facing_mode' => $s['facing_mode'] ?? 'unknown',
+                'capture_settings' => !empty($s['capture_settings']) ? json_decode((string)$s['capture_settings'], true) : null,
             ], $slots),
             'signals' => array_map(static fn(array $sig): array => [
                 'id' => (int)$sig['id'],

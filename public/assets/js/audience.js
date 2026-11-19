@@ -1,4 +1,12 @@
-import { applyBitrateCap, collectPeerStats, sanitizeIceServers, startAdaptiveTransport } from './webrtc-common.js';
+import {
+  applyVideoSenderParameters,
+  collectPeerStats,
+  computeVideoFrameMetrics,
+  formatAspectLabel,
+  preferVideoCodecs,
+  sanitizeIceServers,
+  startAdaptiveTransport,
+} from './webrtc-common.js';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const storageKey = `qrlw_aud_${cfg.eventSlug}`;
@@ -17,14 +25,23 @@ const el = {
   joinForm: document.getElementById('aud-join-form'),
   joinError: document.getElementById('aud-join-error'),
   stageError: document.getElementById('aud-stage-error'),
-  nameInput: document.getElementById('aud-name'),
-  msgInput: document.getElementById('aud-message'),
   consentInput: document.getElementById('aud-consent'),
   startBtn: document.getElementById('aud-start-btn'),
+  orientHint: document.getElementById('aud-orient-hint'),
   previewVideo: document.getElementById('aud-preview'),
-  videoWrap: document.querySelector('.aud-video-wrap'),
+  videoWrap: document.getElementById('aud-video-wrap') || document.querySelector('.aud-video-wrap'),
   onairFrame: document.getElementById('aud-onair-frame'),
   previewNote: document.getElementById('aud-preview-note'),
+  cameraSelect: document.getElementById('aud-camera-select'),
+  zoomWrap: document.getElementById('aud-zoom-wrap'),
+  zoomSlider: document.getElementById('aud-zoom-slider'),
+  zoomVal: document.getElementById('aud-zoom-val'),
+  camInfoBtn: document.getElementById('aud-caminfo-btn'),
+  camInfoPanel: document.getElementById('aud-caminfo-panel'),
+  frameCheckBtn: document.getElementById('aud-framecheck-btn'),
+  frameOverlay: document.getElementById('aud-frame-overlay'),
+  frameBox: document.getElementById('aud-frame-box'),
+  frameReadout: document.getElementById('aud-frame-readout'),
   micBtn: document.getElementById('aud-mic-btn'),
   micLabel: document.getElementById('aud-mic-label'),
   flipBtn: document.getElementById('aud-flip-btn'),
@@ -35,6 +52,7 @@ let sessionToken = localStorage.getItem(storageKey) || '';
 let iceServers = cfg.iceServers || [];
 let localStream = null;
 let facingMode = 'user';
+let currentCaptureSettings = {};
 let userMuted = false;
 let adminMuted = false;
 let currentStatus = 'idle';
@@ -46,7 +64,9 @@ let wakeLock = null;
 let wakeFallbackCanvas = null;
 let lastJoinMeta = null;
 let rejoining = false;
-const peers = new Map(); // targetId -> { pc, pendingCandidates, makingOffer }
+let camInfoVisible = false;
+let frameCheckVisible = false;
+const peers = new Map(); // targetId -> { pc, pendingCandidates, degraded }
 const prevBytesMap = new Map();
 
 // Detect common in-app WebViews where getUserMedia fails on iOS/Android
@@ -88,7 +108,6 @@ async function acquireWakeLock() {
   } catch {
     // Fallback below
   }
-  // Lightweight silent animation loop fallback for browsers without Wake Lock API
   if (!wakeFallbackCanvas) {
     wakeFallbackCanvas = document.createElement('canvas');
     wakeFallbackCanvas.width = 2;
@@ -102,30 +121,174 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+function buildIdealVideoConstraints(extra = {}) {
+  const isPortrait = window.innerHeight > window.innerWidth;
+  return {
+    width: { ideal: isPortrait ? 720 : 1280 },
+    height: { ideal: isPortrait ? 1280 : 720 },
+    frameRate: { ideal: 30 },
+    ...extra,
+  };
+}
+
+function inferFacingFromLabel(label, fallback = '') {
+  const l = String(label || '').toLowerCase();
+  if (/(front|user|selfie|facetime|true?depth)/i.test(l)) return 'user';
+  if (/(back|rear|environment|world)/i.test(l)) return 'environment';
+  return fallback;
+}
+
+async function resetZoomToWide(track) {
+  if (!track || typeof track.getCapabilities !== 'function') return;
+  try {
+    const caps = track.getCapabilities();
+    if (caps && caps.zoom && typeof caps.zoom.min === 'number') {
+      const targetZoom = Math.min(caps.zoom.max ?? caps.zoom.min, Math.max(caps.zoom.min, Math.min(1, caps.zoom.min)));
+      const minZoom = caps.zoom.min;
+      await track.applyConstraints({ advanced: [{ zoom: minZoom || targetZoom }] }).catch(() => {});
+    }
+  } catch {
+    // Ignore zoom capability errors on browsers without zoom support
+  }
+}
+
+function syncZoomControl(track) {
+  if (!el.zoomWrap || !el.zoomSlider || !el.zoomVal) return;
+  try {
+    const caps = track && typeof track.getCapabilities === 'function' ? track.getCapabilities() : null;
+    const settings = track && typeof track.getSettings === 'function' ? track.getSettings() : {};
+    if (caps && caps.zoom && typeof caps.zoom.min === 'number' && typeof caps.zoom.max === 'number' && caps.zoom.max > caps.zoom.min) {
+      el.zoomWrap.hidden = false;
+      el.zoomSlider.min = String(caps.zoom.min);
+      el.zoomSlider.max = String(caps.zoom.max);
+      el.zoomSlider.step = String(caps.zoom.step || 0.1);
+      const curZoom = typeof settings.zoom === 'number' ? settings.zoom : caps.zoom.min;
+      el.zoomSlider.value = String(curZoom);
+      el.zoomVal.textContent = `${Number(curZoom).toFixed(1).replace(/\.0$/, '')}x`;
+    } else {
+      el.zoomWrap.hidden = true;
+    }
+  } catch {
+    el.zoomWrap.hidden = true;
+  }
+}
+
+function syncCaptureInfo() {
+  const track = localStream?.getVideoTracks?.()[0];
+  if (!track) return;
+  const s = typeof track.getSettings === 'function' ? track.getSettings() : {};
+  const label = track.label || '';
+  const detectedFacing = (s.facingMode === 'user' || s.facingMode === 'environment')
+    ? s.facingMode
+    : inferFacingFromLabel(label, facingMode);
+  facingMode = detectedFacing || facingMode;
+
+  const vw = el.previewVideo.videoWidth || s.width || 0;
+  const vh = el.previewVideo.videoHeight || s.height || 0;
+  const ar = vw && vh ? Number((vw / vh).toFixed(4)) : (s.aspectRatio ? Number(s.aspectRatio.toFixed(4)) : 0);
+
+  currentCaptureSettings = {
+    width: s.width || vw || 0,
+    height: s.height || vh || 0,
+    videoWidth: vw,
+    videoHeight: vh,
+    frameRate: s.frameRate ? Math.round(s.frameRate * 10) / 10 : 0,
+    aspectRatio: ar,
+    facingMode,
+    zoom: typeof s.zoom === 'number' ? Math.round(s.zoom * 100) / 100 : null,
+    label: label.slice(0, 80),
+    deviceId: s.deviceId ? String(s.deviceId).slice(0, 64) : '',
+  };
+
+  // Match local preview container aspect ratio to real stream dimensions (uncropped, no stretch)
+  if (el.videoWrap && vw > 0 && vh > 0) {
+    el.videoWrap.style.aspectRatio = `${vw} / ${vh}`;
+  }
+  el.previewVideo.classList.toggle('mirrored', facingMode === 'user');
+
+  // Show non-blocking landscape hint only when device/stream is portrait
+  if (el.orientHint) {
+    const streamPortrait = vw && vh ? vh > vw : window.innerHeight > window.innerWidth;
+    el.orientHint.hidden = !streamPortrait;
+  }
+
+  if (el.camInfoPanel) {
+    const zoomStr = currentCaptureSettings.zoom !== null ? `${currentCaptureSettings.zoom}x` : 'N/A';
+    el.camInfoPanel.innerHTML =
+      `Captured: <strong>${currentCaptureSettings.width}×${currentCaptureSettings.height}</strong> @ ${currentCaptureSettings.frameRate || '—'} fps · AR ${formatAspectLabel(currentCaptureSettings.width, currentCaptureSettings.height)}<br>` +
+      `Rendered video: ${vw}×${vh} · Facing: ${facingMode} · Zoom: ${zoomStr}` +
+      (label ? `<br>Lens: ${label}` : '');
+  }
+
+  if (frameCheckVisible && el.frameOverlay && el.frameBox && el.frameReadout && el.videoWrap) {
+    const m = computeVideoFrameMetrics(el.previewVideo, el.videoWrap, 'fit');
+    el.frameOverlay.hidden = false;
+    el.frameBox.style.left = `${m.boxLeft}px`;
+    el.frameBox.style.top = `${m.boxTop}px`;
+    el.frameBox.style.width = `${m.boxWidth}px`;
+    el.frameBox.style.height = `${m.boxHeight}px`;
+    const zoomStr = currentCaptureSettings.zoom !== null ? `${currentCaptureSettings.zoom}x` : '—';
+    el.frameReadout.textContent =
+      `Cap ${currentCaptureSettings.width}×${currentCaptureSettings.height} · AR ${m.aspectLabel} · Zoom ${zoomStr} · Fit (no crop) · Tile ${m.tileWidth}×${m.tileHeight} · Visible ${m.visiblePct}%`;
+  } else if (el.frameOverlay) {
+    el.frameOverlay.hidden = true;
+  }
+}
+
+async function refreshCameraList(selectedDeviceId = '') {
+  if (!el.cameraSelect || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter((d) => d.kind === 'videoinput');
+    const trackId = localStream?.getVideoTracks?.()[0]?.getSettings?.().deviceId || selectedDeviceId;
+    el.cameraSelect.innerHTML = '';
+    if (cams.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Default camera';
+      el.cameraSelect.appendChild(opt);
+      return;
+    }
+    cams.forEach((cam, idx) => {
+      const opt = document.createElement('option');
+      opt.value = cam.deviceId;
+      opt.textContent = cam.label || `Camera ${idx + 1}`;
+      if (trackId && cam.deviceId === trackId) opt.selected = true;
+      el.cameraSelect.appendChild(opt);
+    });
+  } catch {
+    // Ignore enumerateDevices failures
+  }
+}
+
 async function openVideoTrack(mode, deviceId = null) {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error('Camera requires HTTPS and a modern mobile browser (Safari or Chrome).');
   }
-  const baseVideo = {
-    width: { ideal: 1280, min: 640 },
-    height: { ideal: 720, min: 360 },
-    frameRate: { ideal: 30, max: 30 },
-  };
-  const attempts = deviceId
-    ? [{ video: { ...baseVideo, deviceId: { exact: deviceId } }, audio: false }, { video: { deviceId: { exact: deviceId } }, audio: false }]
-    : [
-        { video: { ...baseVideo, facingMode: { exact: mode } }, audio: false },
-        { video: { facingMode: { exact: mode } }, audio: false },
-        { video: { ...baseVideo, facingMode: { ideal: mode } }, audio: false },
-        { video: { facingMode: mode }, audio: false },
-      ];
+
+  let attempts;
+  if (deviceId) {
+    attempts = [
+      { video: buildIdealVideoConstraints({ deviceId: { exact: deviceId } }), audio: false },
+      { video: { deviceId: { exact: deviceId } }, audio: false },
+    ];
+  } else {
+    attempts = [
+      { video: buildIdealVideoConstraints({ facingMode: { ideal: mode } }), audio: false },
+      { video: { facingMode: { exact: mode } }, audio: false },
+      { video: { facingMode: mode }, audio: false },
+    ];
+  }
 
   let lastErr = null;
   for (const c of attempts) {
     try {
       const s = await navigator.mediaDevices.getUserMedia(c);
       const track = s.getVideoTracks()[0];
-      if (track) return track;
+      if (track) {
+        await resetZoomToWide(track);
+        return track;
+      }
       s.getTracks().forEach((t) => t.stop());
     } catch (err) {
       lastErr = err;
@@ -137,23 +300,31 @@ async function openVideoTrack(mode, deviceId = null) {
   throw lastErr || new Error('Could not access the requested camera.');
 }
 
-async function pickOppositeDeviceId(targetMode, currentDeviceId) {
+async function pickPreferredDeviceId(targetMode, currentDeviceId) {
   if (!navigator.mediaDevices?.enumerateDevices) return null;
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter((d) => d.kind === 'videoinput');
-    if (cams.length < 2) return null;
+    const cams = devices.filter((d) => d.kind === 'videoinput' && d.deviceId !== currentDeviceId);
+    if (cams.length === 0) return null;
+
     const isBackWanted = targetMode === 'environment';
-    const match = cams.find((d) => {
-      if (d.deviceId === currentDeviceId) return false;
-      const lbl = (d.label || '').toLowerCase();
-      return isBackWanted
-        ? /(back|rear|environment|world)/i.test(lbl)
-        : /(front|user|selfie|facetime)/i.test(lbl);
+    const frontRe = /(front|user|selfie|facetime|true?depth)/i;
+    const backRe = /(back|rear|environment|world)/i;
+    const secondaryLensRe = /(tele|periscope|macro|depth|ultra|0\.5|tof|mono)/i;
+
+    const dirMatches = cams.filter((d) => {
+      const lbl = d.label || '';
+      return isBackWanted ? backRe.test(lbl) : frontRe.test(lbl);
     });
-    if (match) return match.deviceId;
-    const other = cams.find((d) => d.deviceId && d.deviceId !== currentDeviceId);
-    return other ? other.deviceId : null;
+
+    if (dirMatches.length > 0) {
+      // Avoid silently picking a telephoto/ultra-wide rear camera when a standard main lens exists
+      const mainLens = dirMatches.find((d) => !secondaryLensRe.test(d.label || ''));
+      return (mainLens || dirMatches[0]).deviceId;
+    }
+
+    const nonSecondary = cams.find((d) => !secondaryLensRe.test(d.label || ''));
+    return (nonSecondary || cams[0]).deviceId || null;
   } catch {
     return null;
   }
@@ -161,12 +332,7 @@ async function pickOppositeDeviceId(targetMode, currentDeviceId) {
 
 async function startCamera(mode) {
   const constraints = {
-    video: {
-      facingMode: { ideal: mode },
-      width: { ideal: 1280, min: 640 },
-      height: { ideal: 720, min: 360 },
-      frameRate: { ideal: 30, max: 30 },
-    },
+    video: buildIdealVideoConstraints({ facingMode: { ideal: mode } }),
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
@@ -188,8 +354,12 @@ async function startCamera(mode) {
     if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
       throw new Error('No camera found on this device.');
     }
-    // Retry with relaxed constraints
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode }, audio: true });
+  }
+  const vTrack = stream.getVideoTracks()[0];
+  if (vTrack) {
+    await resetZoomToWide(vTrack);
+    syncZoomControl(vTrack);
   }
   return stream;
 }
@@ -214,15 +384,15 @@ el.micBtn.addEventListener('click', () => {
   applyAudioMuteState();
 });
 
-let flippingCamera = false;
-el.flipBtn.addEventListener('click', async () => {
+async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
   if (!localStream || flippingCamera) return;
   flippingCamera = true;
   el.flipBtn.disabled = true;
+  if (el.cameraSelect) el.cameraSelect.disabled = true;
   el.stageError.hidden = true;
 
   const prevMode = facingMode;
-  const nextMode = prevMode === 'user' ? 'environment' : 'user';
+  const nextMode = targetMode || (prevMode === 'user' ? 'environment' : 'user');
   const oldVideoTracks = localStream.getVideoTracks();
   const oldDeviceId = oldVideoTracks[0]?.getSettings?.().deviceId || null;
   const audioTracks = localStream.getAudioTracks();
@@ -234,22 +404,28 @@ el.flipBtn.addEventListener('click', async () => {
     });
 
     let newVideoTrack = null;
-    try {
-      newVideoTrack = await openVideoTrack(nextMode);
-    } catch {
-      const altId = await pickOppositeDeviceId(nextMode, oldDeviceId);
-      if (altId) {
-        newVideoTrack = await openVideoTrack(nextMode, altId);
+    if (deviceId) {
+      newVideoTrack = await openVideoTrack(nextMode, deviceId);
+    } else {
+      try {
+        // When flipping to rear, pick standard main rear lens if identifiable
+        const preferredBackId = nextMode === 'environment' ? await pickPreferredDeviceId('environment', oldDeviceId) : null;
+        newVideoTrack = preferredBackId
+          ? await openVideoTrack(nextMode, preferredBackId)
+          : await openVideoTrack(nextMode);
+      } catch {
+        const altId = await pickPreferredDeviceId(nextMode, oldDeviceId);
+        if (altId) newVideoTrack = await openVideoTrack(nextMode, altId);
       }
     }
 
     if (!newVideoTrack) {
-      throw new Error('Could not switch to the other camera on this device.');
+      throw new Error('Could not switch to the selected camera on this device.');
     }
 
     const actualDeviceId = newVideoTrack.getSettings?.().deviceId || null;
-    if (oldDeviceId && actualDeviceId === oldDeviceId) {
-      const altId = await pickOppositeDeviceId(nextMode, oldDeviceId);
+    if (!deviceId && oldDeviceId && actualDeviceId === oldDeviceId) {
+      const altId = await pickPreferredDeviceId(nextMode, oldDeviceId);
       if (altId) {
         try {
           newVideoTrack.stop();
@@ -267,17 +443,28 @@ el.flipBtn.addEventListener('click', async () => {
           await sender.replaceTrack(newVideoTrack);
         }
       }
+      applyVideoSenderParameters(entry.pc, {
+        maxBitrate: 2000000,
+        degradationPreference: entry.degraded ? 'balanced' : 'maintain-resolution',
+      });
     }
 
     localStream = updatedStream;
-    const reportedFacing = newVideoTrack.getSettings?.().facingMode;
-    facingMode = (reportedFacing === 'user' || reportedFacing === 'environment') ? reportedFacing : nextMode;
+    const settings = newVideoTrack.getSettings?.() || {};
+    const reportedFacing = (settings.facingMode === 'user' || settings.facingMode === 'environment')
+      ? settings.facingMode
+      : inferFacingFromLabel(newVideoTrack.label, nextMode);
+    facingMode = reportedFacing || nextMode;
+
     el.previewVideo.srcObject = localStream;
-    el.previewVideo.classList.toggle('mirrored', facingMode === 'user');
+    syncZoomControl(newVideoTrack);
+    syncCaptureInfo();
+    await refreshCameraList(settings.deviceId || '');
     await el.previewVideo.play().catch(() => {});
+    syncCaptureInfo();
     applyAudioMuteState();
+    reportAudienceStats();
   } catch (err) {
-    // Recover previous camera if switching failed after stopping the old track
     try {
       const fallbackTrack = await openVideoTrack(prevMode, oldDeviceId);
       const recovered = new MediaStream([fallbackTrack, ...audioTracks]);
@@ -290,6 +477,8 @@ el.flipBtn.addEventListener('click', async () => {
       }
       localStream = recovered;
       el.previewVideo.srcObject = localStream;
+      syncZoomControl(fallbackTrack);
+      syncCaptureInfo();
       await el.previewVideo.play().catch(() => {});
     } catch {}
     el.stageError.textContent = err.message || 'Could not switch camera.';
@@ -297,8 +486,56 @@ el.flipBtn.addEventListener('click', async () => {
   } finally {
     flippingCamera = false;
     el.flipBtn.disabled = false;
+    if (el.cameraSelect) el.cameraSelect.disabled = false;
+  }
+}
+
+let flippingCamera = false;
+el.flipBtn.addEventListener('click', () => {
+  switchCameraTrack({ targetMode: facingMode === 'user' ? 'environment' : 'user' });
+});
+
+el.cameraSelect?.addEventListener('change', () => {
+  const deviceId = el.cameraSelect.value;
+  if (deviceId) {
+    switchCameraTrack({ deviceId });
   }
 });
+
+el.zoomSlider?.addEventListener('input', async () => {
+  const track = localStream?.getVideoTracks?.()[0];
+  const val = Number(el.zoomSlider.value || 1);
+  if (el.zoomVal) el.zoomVal.textContent = `${val.toFixed(1).replace(/\.0$/, '')}x`;
+  if (!track) return;
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: val }] });
+    syncCaptureInfo();
+  } catch {
+    // Ignore unsupported zoom constraint update
+  }
+});
+
+el.camInfoBtn?.addEventListener('click', () => {
+  camInfoVisible = !camInfoVisible;
+  el.camInfoBtn.setAttribute('aria-expanded', String(camInfoVisible));
+  if (el.camInfoPanel) el.camInfoPanel.hidden = !camInfoVisible;
+  syncCaptureInfo();
+});
+
+el.frameCheckBtn?.addEventListener('click', () => {
+  frameCheckVisible = !frameCheckVisible;
+  el.frameCheckBtn.setAttribute('aria-pressed', String(frameCheckVisible));
+  syncCaptureInfo();
+});
+
+const onViewportOrVideoChange = () => {
+  if (!localStream) return;
+  setTimeout(syncCaptureInfo, 80);
+};
+window.addEventListener('orientationchange', onViewportOrVideoChange);
+window.addEventListener('resize', onViewportOrVideoChange);
+el.previewVideo.addEventListener('loadedmetadata', syncCaptureInfo);
+el.previewVideo.addEventListener('resize', syncCaptureInfo);
 
 async function sendThumbnail() {
   if (!localStream || !sessionToken || !['waiting', 'onair'].includes(currentStatus)) return;
@@ -310,14 +547,16 @@ async function sendThumbnail() {
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  // Center-crop cover into 160x120
+  ctx.fillStyle = '#05070c';
+  ctx.fillRect(0, 0, w, h);
+  // Fit uncropped using Math.min so admin lobby thumbnail matches full-frame view
   const vw = el.previewVideo.videoWidth;
   const vh = el.previewVideo.videoHeight;
-  const scale = Math.max(w / vw, h / vh);
+  const scale = Math.min(w / vw, h / vh);
   const dw = vw * scale;
   const dh = vh * scale;
   ctx.drawImage(el.previewVideo, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  const dataUri = canvas.toDataURL('image/jpeg', 0.65);
+  const dataUri = canvas.toDataURL('image/jpeg', 0.68);
 
   try {
     const resp = await fetch('/api/audience/thumbnail', {
@@ -337,15 +576,16 @@ async function autoRejoinIfNeeded() {
   if (rejoining || !localStream || !lastJoinMeta) return;
   rejoining = true;
   try {
+    syncCaptureInfo();
     const resp = await fetch('/api/audience/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         slug: cfg.eventSlug,
-        display_name: lastJoinMeta.display_name,
-        message: lastJoinMeta.message,
         consent: true,
         session_token: '',
+        facing_mode: facingMode,
+        capture_settings: currentCaptureSettings,
       }),
     });
     const data = await resp.json();
@@ -405,13 +645,14 @@ async function ensurePeerForTarget(targetId) {
   if (peers.has(targetId) || !localStream) return;
 
   const pc = new RTCPeerConnection({ iceServers: sanitizeIceServers(iceServers) });
-  const entry = { pc, pendingCandidates: [] };
+  const entry = { pc, pendingCandidates: [], degraded: false };
   peers.set(targetId, entry);
 
   for (const track of localStream.getTracks()) {
     pc.addTrack(track, localStream);
   }
-  applyBitrateCap(pc, 1500000);
+  preferVideoCodecs(pc);
+  applyVideoSenderParameters(pc, { maxBitrate: 2000000, degradationPreference: 'maintain-resolution' });
 
   pc.onicecandidate = (ev) => {
     if (ev.candidate) {
@@ -460,6 +701,10 @@ async function handleIncomingSignal(sig) {
         await pc.addIceCandidate(new RTCIceCandidate(c));
       }
       entry.pendingCandidates = [];
+      applyVideoSenderParameters(pc, {
+        maxBitrate: 2000000,
+        degradationPreference: entry.degraded ? 'balanced' : 'maintain-resolution',
+      });
     } else if (sig.type === 'candidate' && sig.payload) {
       if (pc.remoteDescription) {
         await pc.addIceCandidate(new RTCIceCandidate(sig.payload));
@@ -488,7 +733,7 @@ async function handleServerState(state) {
     setBanner('waiting', state.preview_active ? 'Host is previewing your camera...' : 'Waiting in lobby');
     el.videoWrap.classList.remove('is-onair');
     el.onairFrame.hidden = true;
-    el.previewNote.textContent = 'Previewing locally · Host sees thumbnail every 3s';
+    el.previewNote.textContent = 'Previewing locally · Full uncropped frame';
   } else if (state.status === 'removed' || state.status === 'banned' || state.status === 'event_closed' || state.status === 'left') {
     teardownMediaAndLoops();
     el.stepStage.hidden = true;
@@ -542,14 +787,41 @@ function teardownMediaAndLoops() {
 }
 
 async function reportAudienceStats() {
-  const obsPeer = peers.get('obs') || peers.values().next().value;
-  if (!obsPeer || !sessionToken) return;
-  const st = await collectPeerStats(obsPeer.pc, prevBytesMap, 'aud');
+  if (!sessionToken || !localStream) return;
+  syncCaptureInfo();
+  const obsEntry = peers.get('obs') || peers.values().next().value;
+  let st = {
+    state: obsEntry ? (obsEntry.pc.iceConnectionState || obsEntry.pc.connectionState || 'new') : 'lobby',
+    width: currentCaptureSettings.width || 0,
+    height: currentCaptureSettings.height || 0,
+    fps: currentCaptureSettings.frameRate || 0,
+    bitrate: 0,
+    packet_loss: 0,
+    rtt: 0,
+    relay_type: 'unknown',
+  };
+  if (obsEntry) {
+    st = await collectPeerStats(obsEntry.pc, prevBytesMap, 'aud');
+    const isDegraded = st.packet_loss > 5 || st.rtt > 350;
+    if (isDegraded !== obsEntry.degraded) {
+      obsEntry.degraded = isDegraded;
+      applyVideoSenderParameters(obsEntry.pc, {
+        maxBitrate: isDegraded ? 1200000 : 2000000,
+        degradationPreference: isDegraded ? 'balanced' : 'maintain-resolution',
+      });
+    }
+  }
   try {
     await fetch('/api/audience/stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: cfg.eventSlug, session_token: sessionToken, ...st }),
+      body: JSON.stringify({
+        slug: cfg.eventSlug,
+        session_token: sessionToken,
+        facing_mode: facingMode,
+        capture_settings: currentCaptureSettings,
+        ...st,
+      }),
     });
   } catch {
     // ignore
@@ -565,23 +837,22 @@ el.joinForm.addEventListener('submit', async (ev) => {
   try {
     localStream = await startCamera(facingMode);
     el.previewVideo.srcObject = localStream;
-    el.previewVideo.classList.toggle('mirrored', facingMode === 'user');
+    syncCaptureInfo();
+    await refreshCameraList();
     await el.previewVideo.play().catch(() => {});
+    syncCaptureInfo();
     await acquireWakeLock();
 
-    lastJoinMeta = {
-      display_name: el.nameInput.value.trim(),
-      message: el.msgInput.value.trim(),
-    };
+    lastJoinMeta = { consent: Boolean(el.consentInput.checked) };
     const resp = await fetch('/api/audience/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         slug: cfg.eventSlug,
-        display_name: lastJoinMeta.display_name,
-        message: lastJoinMeta.message,
         consent: el.consentInput.checked,
         session_token: sessionToken,
+        facing_mode: facingMode,
+        capture_settings: currentCaptureSettings,
       }),
     });
     const data = await resp.json();
@@ -598,9 +869,10 @@ el.joinForm.addEventListener('submit', async (ev) => {
     el.stepStage.hidden = false;
     setBanner('waiting', 'Waiting in lobby');
     applyAudioMuteState();
+    syncCaptureInfo();
 
-    el.previewVideo.addEventListener('loadeddata', () => { sendThumbnail(); }, { once: true });
-    setTimeout(sendThumbnail, 400);
+    el.previewVideo.addEventListener('loadeddata', () => { syncCaptureInfo(); sendThumbnail(); }, { once: true });
+    setTimeout(() => { syncCaptureInfo(); sendThumbnail(); }, 400);
     thumbTimer = setInterval(sendThumbnail, cfg.thumbIntervalMs || 3000);
     statsTimer = setInterval(reportAudienceStats, 4000);
 

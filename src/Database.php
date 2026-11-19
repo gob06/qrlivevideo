@@ -46,7 +46,72 @@ class Database
             self::$pdo->exec('PRAGMA busy_timeout = 5000;');
         }
 
+        self::ensureSchemaMigrations(self::$pdo, self::$driver);
         return self::$pdo;
+    }
+
+    private static function ensureSchemaMigrations(PDO $pdo, string $driver): void
+    {
+        $flag = Bootstrap::rootPath('storage/schema_v4.migrated');
+        if (is_file($flag)) {
+            return;
+        }
+        try {
+            if ($driver === 'mysql') {
+                $tbl = $pdo->query("SHOW TABLES LIKE 'events'")->fetch();
+                if (!$tbl) {
+                    return;
+                }
+                $addMySqlCol = static function (string $table, string $col, string $def) use ($pdo): void {
+                    if (!$pdo->query("SHOW COLUMNS FROM {$table} LIKE '{$col}'")->fetch()) {
+                        $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$col} {$def}");
+                    }
+                };
+                $addMySqlCol('events', 'join_logo_image_id', 'INT UNSIGNED DEFAULT NULL AFTER logo_image_id');
+                $addMySqlCol('events', 'wall_fit_mode', "ENUM('fit', 'fill', 'stretch') NOT NULL DEFAULT 'fit' AFTER blackout");
+                $addMySqlCol('events', 'wall_tile_bg', "ENUM('blur', 'solid', 'transparent') NOT NULL DEFAULT 'blur' AFTER wall_fit_mode");
+                $addMySqlCol('events', 'wall_tile_bg_color', "VARCHAR(20) NOT NULL DEFAULT '#090d16' AFTER wall_tile_bg");
+                $addMySqlCol('events', 'mirror_front_wall', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER wall_tile_bg_color');
+                $addMySqlCol('participants', 'facing_mode', "VARCHAR(24) NOT NULL DEFAULT '' AFTER thumb_version");
+                $addMySqlCol('participants', 'capture_settings', 'TEXT DEFAULT NULL AFTER facing_mode');
+                $addMySqlCol('wall_slots', 'fit_mode', "ENUM('fit', 'fill', 'stretch') DEFAULT NULL AFTER participant_id");
+                $pdo->exec('CREATE TABLE IF NOT EXISTS system_settings (
+                    setting_key VARCHAR(80) PRIMARY KEY,
+                    setting_value TEXT NOT NULL,
+                    updated_at DATETIME NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+            } else {
+                $tbl = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name='events'")->fetch();
+                if (!$tbl) {
+                    return;
+                }
+                $addSqliteCol = static function (string $table, string $col, string $def) use ($pdo): void {
+                    $cols = $pdo->query("PRAGMA table_info({$table})")->fetchAll();
+                    foreach ($cols as $c) {
+                        if (($c['name'] ?? '') === $col) {
+                            return;
+                        }
+                    }
+                    $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$col} {$def}");
+                };
+                $addSqliteCol('events', 'join_logo_image_id', 'INTEGER DEFAULT NULL');
+                $addSqliteCol('events', 'wall_fit_mode', "TEXT NOT NULL DEFAULT 'fit'");
+                $addSqliteCol('events', 'wall_tile_bg', "TEXT NOT NULL DEFAULT 'blur'");
+                $addSqliteCol('events', 'wall_tile_bg_color', "TEXT NOT NULL DEFAULT '#090d16'");
+                $addSqliteCol('events', 'mirror_front_wall', 'INTEGER NOT NULL DEFAULT 0');
+                $addSqliteCol('participants', 'facing_mode', "TEXT NOT NULL DEFAULT ''");
+                $addSqliteCol('participants', 'capture_settings', "TEXT NOT NULL DEFAULT ''");
+                $addSqliteCol('wall_slots', 'fit_mode', 'TEXT DEFAULT NULL');
+                $pdo->exec("CREATE TABLE IF NOT EXISTS system_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                )");
+            }
+            @file_put_contents($flag, "ok\n");
+        } catch (PDOException $e) {
+            // Ignore transient permission/race errors
+        }
     }
 
     public static function driver(): string

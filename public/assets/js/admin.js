@@ -1,5 +1,6 @@
 import { renderBrandedQR, renderBrandedQRSvg, checkQrSafety, testScanCanvas, downloadBlob } from './qr-brand.js';
-import { sanitizeIceServers } from './webrtc-common.js';
+import { sanitizeIceServers, formatAspectLabel, computeVideoFrameMetrics } from './webrtc-common.js';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const mainEl = document.getElementById('adm-main');
@@ -16,6 +17,7 @@ let lastStateVersion = null;
 let lastStateData = null;
 let soundAlertsEnabled = false;
 let lastAlertHash = '';
+let frameCheckCleanup = null;
 
 // Private Preview / Audio Monitor WebRTC state
 let previewPeer = null; // { pid, pc, stream, audioCtx, analyser, source, rafId }
@@ -125,6 +127,134 @@ modalBackdrop.addEventListener('click', (ev) => {
   if (ev.target === modalBackdrop) closeModal();
 });
 
+async function openTurnConfigModal(onSaved = null) {
+  let st = null;
+  try {
+    st = await api('/api/admin/turn-config');
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+
+  const initMode = st.mode === 'static' ? 'static' : 'cloudflare';
+  openModal(`
+    <h2 style="margin:0;">TURN / ICE Server Configuration</h2>
+    <p class="page-meta" style="margin:0;">Required for phones on cellular networks or strict NATs. Credentials stay server-side.</p>
+    <div id="turn-cfg-status" class="adm-alert ${st.configured ? 'adm-alert-ok' : 'adm-alert-warn'}" style="margin:4px 0;">
+      ${st.configured
+        ? `TURN active (${esc(st.mode === 'cloudflare' ? `Cloudflare ${st.cf_key_preview}` : st.turn_url)} · source: ${esc(st.source.toUpperCase())})`
+        : esc(st.error ? `Error: ${st.error}` : 'TURN not configured (STUN only).')}
+    </div>
+    <div id="turn-cfg-err" class="adm-alert adm-alert-error" hidden></div>
+    <form id="turn-cfg-form" class="adm-auth-form">
+      <div class="seg-tabs" id="turn-mode-tabs">
+        <button type="button" class="seg-tab ${initMode === 'cloudflare' ? 'active' : ''}" data-tmode="cloudflare">Cloudflare Realtime TURN</button>
+        <button type="button" class="seg-tab ${initMode === 'static' ? 'active' : ''}" data-tmode="static">Static TURN (coturn/Metered)</button>
+      </div>
+      <div id="turn-pane-cf" ${initMode === 'cloudflare' ? '' : 'hidden'} style="display:flex;flex-direction:column;gap:10px;">
+        <div class="page-meta">In Cloudflare Dashboard: go to <strong>Realtime → TURN</strong> (not Realtime SFU / Apps and not Account ID), create a TURN key, and copy its <strong>TURN Token ID</strong> and <strong>API Token</strong>.</div>
+        <label class="field">
+          <span>TURN Token ID (CLOUDFLARE_TURN_KEY_ID)</span>
+          <input type="text" id="tc-cf-key" placeholder="${st.cf_key_preview ? `Current: ${esc(st.cf_key_preview)}` : '32-char TURN Token ID'}" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>API Token (CLOUDFLARE_TURN_API_TOKEN)</span>
+          <input type="password" id="tc-cf-token" placeholder="${st.has_cf_token ? 'Saved — paste new token to change' : '64-char API Token'}" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Credential TTL (seconds)</span>
+          <input type="number" id="tc-cf-ttl" min="60" max="86400" value="${Number(st.cf_ttl || 86400)}">
+        </label>
+      </div>
+      <div id="turn-pane-static" ${initMode === 'static' ? '' : 'hidden'} style="display:flex;flex-direction:column;gap:10px;">
+        <label class="field">
+          <span>TURN URL(s) (comma-separated)</span>
+          <input type="text" id="tc-st-url" value="${esc(st.turn_url || '')}" placeholder="turns:turn.example.com:5349?transport=tcp">
+        </label>
+        <label class="field">
+          <span>TURN Username</span>
+          <input type="text" id="tc-st-user" value="${esc(st.turn_user || '')}" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>TURN Credential / Password</span>
+          <input type="password" id="tc-st-pass" placeholder="${st.has_turn_pass ? 'Saved — paste new password to change' : 'Static TURN password'}" autocomplete="off">
+        </label>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <div>
+          ${st.source === 'db' ? '<button type="button" class="btn btn-ghost btn-sm" id="tc-clear-btn">Clear Saved Override</button>' : ''}
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-secondary" id="tc-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="tc-save-btn">Verify &amp; Save</button>
+        </div>
+      </div>
+    </form>
+  `);
+
+  let activeMode = initMode;
+  const cfPane = document.getElementById('turn-pane-cf');
+  const stPane = document.getElementById('turn-pane-static');
+  const errBox = document.getElementById('turn-cfg-err');
+  const saveBtn = document.getElementById('tc-save-btn');
+
+  document.getElementById('turn-mode-tabs').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-tmode]');
+    if (!btn) return;
+    activeMode = btn.dataset.tmode;
+    document.querySelectorAll('#turn-mode-tabs .seg-tab').forEach((b) => b.classList.toggle('active', b === btn));
+    cfPane.hidden = activeMode !== 'cloudflare';
+    stPane.hidden = activeMode !== 'static';
+    errBox.hidden = true;
+  });
+
+  document.getElementById('tc-cancel').addEventListener('click', closeModal);
+
+  document.getElementById('tc-clear-btn')?.addEventListener('click', async () => {
+    try {
+      const res = await api('/api/admin/turn-config', { method: 'POST', json: { action: 'clear' } });
+      toast(res.message || 'TURN override cleared');
+      closeModal();
+      if (onSaved) onSaved();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+    }
+  });
+
+  document.getElementById('turn-cfg-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    errBox.hidden = true;
+    saveBtn.disabled = true;
+    saveBtn.textContent = activeMode === 'cloudflare' ? 'Testing Cloudflare...' : 'Saving...';
+    try {
+      const payload = activeMode === 'cloudflare'
+        ? {
+            mode: 'cloudflare',
+            cf_key_id: document.getElementById('tc-cf-key').value.trim(),
+            cf_api_token: document.getElementById('tc-cf-token').value.trim(),
+            cf_ttl: Number(document.getElementById('tc-cf-ttl').value || 86400),
+          }
+        : {
+            mode: 'static',
+            turn_url: document.getElementById('tc-st-url').value.trim(),
+            turn_user: document.getElementById('tc-st-user').value.trim(),
+            turn_pass: document.getElementById('tc-st-pass').value.trim(),
+          };
+      const res = await api('/api/admin/turn-config', { method: 'POST', json: payload });
+      toast(res.message || 'TURN settings saved');
+      closeModal();
+      if (onSaved) onSaved();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Verify & Save';
+    }
+  });
+}
+
 function formatDuration(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -139,9 +269,10 @@ function formatBytes(bytes) {
 }
 
 function updateNavActive(route) {
+  const pathOnly = String(route || '').split('?')[0];
   document.querySelectorAll('.adm-nav-link').forEach((link) => {
     const target = link.getAttribute('data-nav');
-    const isMatch = route === target || (target === '/admin/events' && route.startsWith('/admin/events'));
+    const isMatch = pathOnly === target || (target === '/admin/events' && pathOnly.startsWith('/admin/events'));
     link.classList.toggle('active', isMatch);
   });
 }
@@ -149,6 +280,10 @@ function updateNavActive(route) {
 function stopBackgroundLoops() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   if (durationTimer) { clearInterval(durationTimer); durationTimer = null; }
+  if (frameCheckCleanup) {
+    try { frameCheckCleanup(); } catch {}
+    frameCheckCleanup = null;
+  }
   stopPreviewSession(false);
 }
 
@@ -161,7 +296,7 @@ function navigate(path, push = true) {
 }
 
 window.addEventListener('popstate', () => {
-  currentRoute = window.location.pathname;
+  currentRoute = window.location.pathname + window.location.search;
   stopBackgroundLoops();
   updateNavActive(currentRoute);
   renderRoute();
@@ -203,7 +338,7 @@ async function stopPreviewSession(notifyServer = true) {
   }
 }
 
-async function startPrivatePreview(eventId, participantId, { videoEl, meterFillEl, unmuteAudio = false }) {
+async function startPrivatePreview(eventId, participantId, { videoEl = null, tile = null, meterFillEl, unmuteAudio = false }) {
   await stopPreviewSession(false);
   listeningPid = unmuteAudio ? participantId : null;
   previewAudioEnabled = unmuteAudio;
@@ -220,10 +355,15 @@ async function startPrivatePreview(eventId, participantId, { videoEl, meterFillE
   pc.ontrack = (ev) => {
     const stream = ev.streams[0] || new MediaStream([ev.track]);
     entry.stream = stream;
-    if (videoEl) {
+    const targetVideo = tile ? tile.video : videoEl;
+    if (tile) {
+      attachStreamToWallTile(tile, stream);
+    } else if (videoEl) {
       videoEl.srcObject = stream;
-      videoEl.muted = !previewAudioEnabled;
-      videoEl.play().catch(() => {});
+    }
+    if (targetVideo) {
+      targetVideo.muted = !previewAudioEnabled;
+      targetVideo.play().catch(() => {});
     }
     if (meterFillEl && stream.getAudioTracks().length > 0) {
       try {
@@ -288,19 +428,22 @@ async function startPrivatePreview(eventId, participantId, { videoEl, meterFillE
 // ---------------- ROUTE DISPATCH ----------------
 
 function renderRoute() {
-  const evMatch = currentRoute.match(/^\/admin\/events\/(\d+)$/);
-  const monMatch = currentRoute.match(/^\/admin\/events\/(\d+)\/monitor$/);
+  const pathOnly = String(currentRoute || '').split('?')[0];
+  const evMatch = pathOnly.match(/^\/admin\/events\/(\d+)$/);
+  const monMatch = pathOnly.match(/^\/admin\/events\/(\d+)\/monitor$/);
   mainEl.classList.toggle('is-studio-fit', Boolean(evMatch));
   mainEl.classList.toggle('is-monitor-fit', Boolean(monMatch));
   if (monMatch) {
     renderMonitorView(Number(monMatch[1]));
   } else if (evMatch) {
     renderEventStudioView(Number(evMatch[1]));
-  } else if (currentRoute === '/admin/images') {
+  } else if (pathOnly === '/admin/frame-check') {
+    renderFrameCheckView();
+  } else if (pathOnly === '/admin/images') {
     renderImageBankView();
-  } else if (currentRoute === '/admin/accounts') {
+  } else if (pathOnly === '/admin/accounts') {
     renderAccountsView();
-  } else if (currentRoute === '/admin/audit') {
+  } else if (pathOnly === '/admin/audit') {
     renderAuditView();
   } else {
     renderEventsListView();
@@ -503,6 +646,25 @@ async function renderEventStudioView(eventId) {
                   <option value="4">4</option>
                 </select>
               </label>
+              <label class="field" style="flex-direction:row;align-items:center;gap:6px;">
+                <span>Fit</span>
+                <select id="st-fit-mode" style="min-height:32px;width:auto;padding:4px 8px;border-radius:6px;border:1px solid var(--border-strong);background:#0d1422;color:#f8fafc;">
+                  <option value="fit">Fit (no crop)</option>
+                  <option value="fill">Fill (crops)</option>
+                  <optgroup label="Advanced">
+                    <option value="stretch">Stretch</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="field" style="flex-direction:row;align-items:center;gap:6px;">
+                <span>Tile Bg</span>
+                <select id="st-tile-bg" style="min-height:32px;width:auto;padding:4px 8px;border-radius:6px;border:1px solid var(--border-strong);background:#0d1422;color:#f8fafc;">
+                  <option value="blur">Blurred</option>
+                  <option value="solid">Solid</option>
+                  <option value="transparent">Transparent</option>
+                </select>
+                <input type="color" id="st-tile-bg-color" value="#090d16" title="Solid tile background color" style="width:32px;height:30px;padding:1px;" hidden>
+              </label>
               <button type="button" class="btn btn-secondary btn-sm" id="st-labels-btn">Labels: On</button>
               <button type="button" class="btn btn-secondary btn-sm" id="st-audio-btn">Audio: Off</button>
             ` : ''}
@@ -622,6 +784,21 @@ async function renderEventStudioView(eventId) {
             ${canHost ? `
             <div id="st-tab-settings" hidden>
               <form id="ev-settings-form" style="display:flex;flex-direction:column;gap:10px;">
+                <div style="padding:10px;border-radius:8px;background:#0d1422;border:1px solid var(--border-hairline);display:flex;flex-direction:column;gap:8px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.04em;">Audience Join Page Branding / Logo</span>
+                    <span class="page-meta" id="ev-join-brand-status"></span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                    <div id="ev-join-brand-preview" style="width:72px;height:72px;border-radius:8px;background:#070b14;border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;"></div>
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                      <input type="file" id="ev-join-brand-file" accept=".png,.jpg,.jpeg,.webp,.svg,image/*" hidden>
+                      <button type="button" class="btn btn-primary btn-sm" id="ev-join-brand-upload">Upload Photo</button>
+                      <button type="button" class="btn btn-secondary btn-sm" id="ev-join-brand-bank">Image Bank</button>
+                      <button type="button" class="btn btn-ghost btn-sm" id="ev-join-brand-clear">Clear</button>
+                    </div>
+                  </div>
+                </div>
                 <label class="field">
                   <span>Event Title</span>
                   <input type="text" id="ev-set-title" maxlength="120" required>
@@ -639,9 +816,38 @@ async function renderEventStudioView(eventId) {
                     <input type="number" id="ev-set-max" min="2" max="500">
                   </label>
                 </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                  <label class="field">
+                    <span>Wall Fit Mode</span>
+                    <select id="ev-set-fit">
+                      <option value="fit">Fit (no crop, default)</option>
+                      <option value="fill">Fill (crops the picture)</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Tile Background</span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <select id="ev-set-tilebg" style="flex:1;min-width:0;">
+                        <option value="blur">Blurred video fill</option>
+                        <option value="solid">Solid color</option>
+                        <option value="transparent">Transparent</option>
+                      </select>
+                      <input type="color" id="ev-set-tilebg-color" value="#090d16" title="Solid tile background" hidden>
+                    </div>
+                  </label>
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+                  <input type="checkbox" id="ev-set-mirror"> Mirror front cameras on the wall
+                </label>
                 <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
                   <input type="checkbox" id="ev-set-lock"> Lock new joins (existing guests stay connected)
                 </label>
+                <details class="adv-details" id="ev-set-adv">
+                  <summary>Advanced display options</summary>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+                    <input type="checkbox" id="ev-set-stretch"> Stretch video to fill tile (distorts aspect ratio)
+                  </label>
+                </details>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
                   <button type="submit" class="btn btn-primary btn-sm">Save Settings</button>
                   <button type="button" class="btn btn-secondary btn-sm" id="ev-regen-key-btn">Regenerate Wall Key</button>
@@ -718,6 +924,40 @@ async function renderEventStudioView(eventId) {
           json: { max_wall_feeds: Number(e.target.value) },
         });
         toast(`Max simultaneous feeds set to ${e.target.value}`);
+        await refreshState();
+      } catch (err) { toast(err.message); }
+    });
+    document.getElementById('st-fit-mode').addEventListener('change', async (e) => {
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: { wall_fit_mode: e.target.value },
+        });
+        pokeWallIframe(wallIframe);
+        toast(`Wall fit mode: ${e.target.value}`);
+        await refreshState();
+      } catch (err) { toast(err.message); }
+    });
+    document.getElementById('st-tile-bg').addEventListener('change', async (e) => {
+      const bg = e.target.value;
+      document.getElementById('st-tile-bg-color').hidden = bg !== 'solid';
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: { wall_tile_bg: bg },
+        });
+        pokeWallIframe(wallIframe);
+        toast(`Tile background: ${bg}`);
+        await refreshState();
+      } catch (err) { toast(err.message); }
+    });
+    document.getElementById('st-tile-bg-color').addEventListener('change', async (e) => {
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: { wall_tile_bg: 'solid', wall_tile_bg_color: e.target.value },
+        });
+        pokeWallIframe(wallIframe);
         await refreshState();
       } catch (err) { toast(err.message); }
     });
@@ -928,14 +1168,91 @@ async function renderEventStudioView(eventId) {
       }
     });
 
+    // Audience Join Page Branding / Logo controls
+    const syncJoinBrandPreview = (ev) => {
+      const prevEl = document.getElementById('ev-join-brand-preview');
+      const statusEl = document.getElementById('ev-join-brand-status');
+      if (!prevEl || !statusEl) return;
+      const customFile = ev.join_logo_filename || null;
+      const qrFile = ev.logo_filename || null;
+      const shownFile = customFile || qrFile;
+      if (shownFile) {
+        prevEl.innerHTML = `<img src="/uploads/logos/${encodeURIComponent(shownFile)}" alt="Audience join branding" style="width:100%;height:100%;object-fit:contain;">`;
+        statusEl.textContent = customFile ? 'Custom join photo' : 'Using QR logo';
+      } else {
+        prevEl.innerHTML = '<span class="page-meta" style="font-size:11px;">None</span>';
+        statusEl.textContent = 'No photo set';
+      }
+    };
+    syncJoinBrandPreview(initial.event);
+
+    const saveJoinBrandImage = async (imageId) => {
+      await api(`/api/admin/events/${eventId}/settings`, {
+        method: 'POST',
+        json: { join_logo_image_id: imageId },
+      });
+      toast(imageId ? 'Audience join branding saved' : 'Custom join branding cleared');
+      await refreshState();
+      if (lastStateData?.event) syncJoinBrandPreview(lastStateData.event);
+    };
+
+    const joinBrandFileEl = document.getElementById('ev-join-brand-file');
+    document.getElementById('ev-join-brand-upload').addEventListener('click', () => joinBrandFileEl.click());
+    joinBrandFileEl.addEventListener('change', async () => {
+      if (!joinBrandFileEl.files?.length) return;
+      try {
+        const res = await uploadImageFiles(joinBrandFileEl.files, 'shared', 'join-branding');
+        const first = res.uploaded?.[0]?.image;
+        if (first) {
+          await saveJoinBrandImage(Number(first.id));
+        }
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        joinBrandFileEl.value = '';
+      }
+    });
+    document.getElementById('ev-join-brand-bank').addEventListener('click', () => {
+      openLogoPickerModal(async (img) => {
+        try {
+          await saveJoinBrandImage(Number(img.id));
+        } catch (err) {
+          toast(err.message);
+        }
+      }, 'Select Audience Join Branding Photo');
+    });
+    document.getElementById('ev-join-brand-clear').addEventListener('click', async () => {
+      try {
+        await saveJoinBrandImage(null);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
     // Event Settings form
+    const initFit = initial.event.wall_fit_mode || 'fit';
+    const initBg = initial.event.wall_tile_bg || 'blur';
+    const initBgCol = initial.event.wall_tile_bg_color || '#090d16';
     document.getElementById('ev-set-title').value = initial.event.title;
     document.getElementById('ev-set-status').value = initial.event.status;
     document.getElementById('ev-set-max').value = initial.event.max_participants;
     document.getElementById('ev-set-lock').checked = Number(initial.event.join_locked) === 1;
+    document.getElementById('ev-set-fit').value = initFit === 'fill' ? 'fill' : 'fit';
+    document.getElementById('ev-set-stretch').checked = initFit === 'stretch';
+    document.getElementById('ev-set-tilebg').value = initBg;
+    document.getElementById('ev-set-tilebg-color').value = initBgCol;
+    document.getElementById('ev-set-tilebg-color').hidden = initBg !== 'solid';
+    document.getElementById('ev-set-mirror').checked = Number(initial.event.mirror_front_wall || 0) === 1;
+
+    document.getElementById('ev-set-tilebg').addEventListener('change', (e) => {
+      document.getElementById('ev-set-tilebg-color').hidden = e.target.value !== 'solid';
+    });
 
     document.getElementById('ev-settings-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const chosenFit = document.getElementById('ev-set-stretch').checked
+        ? 'stretch'
+        : document.getElementById('ev-set-fit').value;
       try {
         await api(`/api/admin/events/${eventId}/settings`, {
           method: 'POST',
@@ -944,8 +1261,13 @@ async function renderEventStudioView(eventId) {
             status: document.getElementById('ev-set-status').value,
             max_participants: Number(document.getElementById('ev-set-max').value),
             join_locked: document.getElementById('ev-set-lock').checked,
+            wall_fit_mode: chosenFit,
+            wall_tile_bg: document.getElementById('ev-set-tilebg').value,
+            wall_tile_bg_color: document.getElementById('ev-set-tilebg-color').value,
+            mirror_front_wall: document.getElementById('ev-set-mirror').checked,
           },
         });
+        pokeWallIframe(wallIframe);
         toast('Event settings updated');
         await refreshState();
       } catch (err) {
@@ -1013,6 +1335,7 @@ async function renderEventStudioView(eventId) {
       const occ = bySlot.get(n);
       const disabled = n > maxFeeds;
       const sel = selectedSlot === n ? 'outline:2px solid #60a5fa;' : '';
+      const slotFit = occ?.slot_fit_mode || '';
       return `
         <div class="slot-box ${occ ? 'occupied' : ''} ${disabled ? 'disabled' : ''}" data-slot="${n}" draggable="${occ ? 'true' : 'false'}" style="${sel}">
           <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1020,6 +1343,16 @@ async function renderEventStudioView(eventId) {
             ${occ ? `<button type="button" class="btn btn-ghost btn-sm slot-remove-btn" data-pid="${occ.id}" style="min-height:24px;padding:2px 6px;font-size:11px;">&times;</button>` : ''}
           </div>
           <div class="slot-occ-name">${occ ? esc(occ.display_name) : (disabled ? 'Disabled' : 'Empty (QR / Idle)')}</div>
+          ${occ && canHost ? `
+            <select class="slot-fit-select" data-slot="${n}" title="Per-tile fit override">
+              <option value="inherit" ${!slotFit ? 'selected' : ''}>Fit: Event (${esc(ev.wall_fit_mode || 'fit')})</option>
+              <option value="fit" ${slotFit === 'fit' ? 'selected' : ''}>Tile: Fit (no crop)</option>
+              <option value="fill" ${slotFit === 'fill' ? 'selected' : ''}>Tile: Fill (crops)</option>
+              <optgroup label="Advanced">
+                <option value="stretch" ${slotFit === 'stretch' ? 'selected' : ''}>Tile: Stretch</option>
+              </optgroup>
+            </select>
+          ` : ''}
         </div>
       `;
     }).join('');
@@ -1028,6 +1361,18 @@ async function renderEventStudioView(eventId) {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         sendWallAction({ action: 'remove_from_wall', participant_id: Number(b.dataset.pid) });
+      });
+    });
+
+    grid.querySelectorAll('.slot-fit-select').forEach((selEl) => {
+      selEl.addEventListener('click', (e) => e.stopPropagation());
+      selEl.addEventListener('change', (e) => {
+        e.stopPropagation();
+        sendWallAction({
+          action: 'set_slot_fit',
+          slot_no: Number(selEl.dataset.slot),
+          fit_mode: selEl.value === 'inherit' ? null : selEl.value,
+        });
       });
     });
 
@@ -1078,6 +1423,7 @@ async function renderEventStudioView(eventId) {
     grid.innerHTML = list.map((p) => {
       const isOnAir = p.status === 'onair';
       const thumbUrl = p.has_thumb ? `/api/admin/events/${eventId}/participants/${p.id}/thumb?v=${p.thumb_version}` : '';
+      const capStr = formatCaptureSummary(p);
       return `
         <article class="part-card ${isOnAir ? 'is-onair' : ''}">
           <div class="part-thumb" data-preview-pid="${p.id}">
@@ -1087,7 +1433,7 @@ async function renderEventStudioView(eventId) {
           <div class="part-body">
             <div class="part-name">${esc(p.display_name)}${p.name_hidden ? ' (Hidden)' : ''}${p.muted_by_admin ? ' · Muted' : ''}</div>
             <div class="part-msg">${esc(p.message || '')}</div>
-            <div class="part-meta tabular">Joined ${esc(p.joined_at.slice(11, 19))} UTC</div>
+            <div class="part-meta tabular">Joined ${esc(p.joined_at.slice(11, 19))} UTC${capStr !== '—' ? ` · ${esc(capStr)}` : ''}</div>
             <div class="part-actions">
               ${isOnAir
                 ? `<button type="button" class="btn btn-secondary btn-sm p-remove" data-pid="${p.id}">Remove</button>`
@@ -1177,11 +1523,11 @@ async function renderEventStudioView(eventId) {
   function openParticipantPreviewModal(pid) {
     const p = lastStateData.participants.find((x) => x.id === pid);
     if (!p) return;
+    const capStr = formatCaptureSummary(p);
     openModal(`
       <div class="panel-head"><h2 style="margin:0;">Preview: ${esc(p.display_name)}</h2><button type="button" class="btn btn-ghost btn-sm" id="pm-close">Close</button></div>
-      <div style="background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/9;position:relative;">
-        <video id="pm-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:contain;"></video>
-      </div>
+      <div id="pm-tile-wrap" style="background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/9;position:relative;"></div>
+      <div class="page-meta tabular">${capStr !== '—' ? `Phone camera: ${esc(capStr)}` : 'Waiting for phone camera telemetry...'}</div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-size:12px;color:var(--text-secondary);">Audio Level</span>
@@ -1193,13 +1539,23 @@ async function renderEventStudioView(eventId) {
         </div>
       </div>
     `);
-    const vEl = document.getElementById('pm-video');
+    const ev = lastStateData?.event || initial.event;
+    const pmTile = createWallTile();
+    pmTile.lowerEl.hidden = true;
+    updateWallTileAppearance(pmTile, {
+      fitMode: 'fit',
+      tileBg: ev.wall_tile_bg || 'blur',
+      tileBgColor: ev.wall_tile_bg_color || '#090d16',
+      mirrored: false,
+      captureInfo: p.capture_settings || null,
+    });
+    document.getElementById('pm-tile-wrap').appendChild(pmTile.root);
     const mEl = document.getElementById('pm-meter');
-    startPrivatePreview(eventId, pid, { videoEl: vEl, meterFillEl: mEl, unmuteAudio: false });
+    startPrivatePreview(eventId, pid, { tile: pmTile, meterFillEl: mEl, unmuteAudio: false });
 
     document.getElementById('pm-listen-btn').addEventListener('click', (e) => {
       previewAudioEnabled = !previewAudioEnabled;
-      vEl.muted = !previewAudioEnabled;
+      pmTile.video.muted = !previewAudioEnabled;
       e.target.textContent = previewAudioEnabled ? 'Listen: Active' : 'Listen: Muted';
     });
     document.getElementById('pm-take-btn').addEventListener('click', async () => {
@@ -1232,8 +1588,23 @@ async function renderEventStudioView(eventId) {
     if (canHost) {
       document.getElementById('st-layout').value = ev.layout;
       document.getElementById('st-max-feeds').value = String(ev.max_wall_feeds);
+      document.getElementById('st-fit-mode').value = ev.wall_fit_mode || 'fit';
+      const tileBg = ev.wall_tile_bg || 'blur';
+      document.getElementById('st-tile-bg').value = tileBg;
+      const colEl = document.getElementById('st-tile-bg-color');
+      colEl.value = ev.wall_tile_bg_color || '#090d16';
+      colEl.hidden = tileBg !== 'solid';
       document.getElementById('st-labels-btn').textContent = Number(ev.show_labels) === 1 ? 'Labels: On' : 'Labels: Off';
       document.getElementById('st-audio-btn').textContent = Number(ev.audio_enabled) === 1 ? 'Audio: On' : 'Audio: Off';
+      const prevEl = document.getElementById('ev-join-brand-preview');
+      const statusEl = document.getElementById('ev-join-brand-status');
+      if (prevEl && statusEl) {
+        const shownFile = ev.join_logo_filename || ev.logo_filename || null;
+        prevEl.innerHTML = shownFile
+          ? `<img src="/uploads/logos/${encodeURIComponent(shownFile)}" alt="Audience join branding" style="width:100%;height:100%;object-fit:contain;">`
+          : '<span class="page-meta" style="font-size:11px;">None</span>';
+        statusEl.textContent = ev.join_logo_filename ? 'Custom join photo' : (ev.logo_filename ? 'Using QR logo' : 'No photo set');
+      }
     }
     const blkBtn = document.getElementById('st-blackout-btn');
     blkBtn.textContent = Number(ev.blackout) === 1 ? 'End Blackout (B)' : 'Blackout (B)';
@@ -1292,6 +1663,7 @@ async function renderMonitorView(eventId) {
         <div class="page-meta" id="mon-sub">Real-time program output, stream telemetry &amp; candidate preview</div>
       </div>
       <div class="page-actions">
+        <a href="/admin/frame-check?event=${eventId}" data-nav="/admin/frame-check?event=${eventId}" class="btn btn-secondary btn-sm">Frame Check</a>
         <button type="button" class="btn btn-secondary btn-sm" id="mon-chime-btn">Alert Sound: Off</button>
         <a href="/admin/events/${eventId}" data-nav="/admin/events/${eventId}" class="btn btn-primary btn-sm">Control Studio</a>
       </div>
@@ -1342,9 +1714,7 @@ async function renderMonitorView(eventId) {
               <button type="button" class="btn btn-ghost btn-sm" id="mon-stop-prev-btn" disabled>Stop</button>
             </div>
           </div>
-          <div style="background:#05070c;border-radius:6px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;">
-            <video id="mon-preview-video" autoplay playsinline style="width:100%;height:100%;object-fit:contain;"></video>
-          </div>
+          <div id="mon-preview-wrap" style="background:#05070c;border-radius:6px;overflow:hidden;aspect-ratio:16/9;position:relative;"></div>
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px;">
             <span class="page-meta" id="mon-preview-label">Select any waiting guest below to private-preview</span>
             <div style="display:flex;align-items:center;gap:8px;">
@@ -1358,8 +1728,8 @@ async function renderMonitorView(eventId) {
 
     <section class="panel" style="margin-bottom:14px;">
       <div class="panel-head">
-        <h2 class="panel-title">On-Air Feed Health &amp; Audio Monitor</h2>
-        <span class="page-meta">Live WebRTC getStats() from OBS Wall &amp; Audience Phones</span>
+        <h2 class="panel-title">On-Air Feed Health &amp; Camera Telemetry</h2>
+        <span class="page-meta">Live WebRTC getStats() + phone track.getSettings()</span>
       </div>
       <div id="mon-health-list"></div>
     </section>
@@ -1398,7 +1768,18 @@ async function renderMonitorView(eventId) {
     e.target.textContent = soundAlertsEnabled ? 'Alert Sound: On' : 'Alert Sound: Off';
   });
 
-  const pvVideo = document.getElementById('mon-preview-video');
+  const pvTile = createWallTile();
+  pvTile.lowerEl.hidden = true;
+  pvTile.connEl.textContent = 'No preview active';
+  updateWallTileAppearance(pvTile, {
+    fitMode: 'fit',
+    tileBg: initial.event.wall_tile_bg || 'blur',
+    tileBgColor: initial.event.wall_tile_bg_color || '#090d16',
+    mirrored: false,
+  });
+  document.getElementById('mon-preview-wrap').appendChild(pvTile.root);
+
+  const pvVideo = pvTile.video;
   const pvMeter = document.getElementById('mon-preview-meter');
   const pvLabel = document.getElementById('mon-preview-label');
   const pvListenBtn = document.getElementById('mon-preview-listen-btn');
@@ -1430,7 +1811,9 @@ async function renderMonitorView(eventId) {
   pvStopBtn.addEventListener('click', async () => {
     await stopPreviewSession(true);
     activePreviewPid = null;
-    pvVideo.srcObject = null;
+    attachStreamToWallTile(pvTile, null);
+    pvTile.connEl.hidden = false;
+    pvTile.connEl.textContent = 'Preview stopped';
     pvTakeBtn.disabled = true;
     pvStopBtn.disabled = true;
     pvListenBtn.disabled = true;
@@ -1497,9 +1880,16 @@ async function renderMonitorView(eventId) {
     }
     lastAlertHash = alertHash;
 
-    document.getElementById('mon-alerts').innerHTML = alerts.length === 0
+    const monAlertsEl = document.getElementById('mon-alerts');
+    monAlertsEl.innerHTML = alerts.length === 0
       ? '<div class="adm-alert adm-alert-ok">All systems nominal.</div>'
-      : alerts.map((a) => `<div class="adm-alert ${a.level === 'red' ? 'adm-alert-error' : 'adm-alert-warn'}">${esc(a.message)}</div>`).join('');
+      : alerts.map((a) => {
+          const isTurn = (a.code === 'turn_error' || a.code === 'no_turn') && cfg.user.role === 'super_admin';
+          return `<div class="adm-alert ${a.level === 'red' ? 'adm-alert-error' : 'adm-alert-warn'}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;"><span>${esc(a.message)}</span>${isTurn ? '<button type="button" class="btn btn-secondary btn-sm mon-turn-cfg">Configure TURN</button>' : ''}</div>`;
+        }).join('');
+    monAlertsEl.querySelectorAll('.mon-turn-cfg').forEach((btn) => {
+      btn.addEventListener('click', () => openTurnConfigModal(() => refreshState()));
+    });
 
     // On-air health & audio listen
     const onAir = (data.participants || []).filter((p) => p.status === 'onair');
@@ -1516,9 +1906,13 @@ async function renderMonitorView(eventId) {
         const rtt = ws ? `${ws.rtt} ms` : '—';
         const relay = ws ? ws.relay_type.toUpperCase() : '—';
         const isListening = listeningPid === p.id;
+        const capStr = formatCaptureSummary(p);
         return `
           <div class="health-row">
-            <div><strong>Slot ${p.slot_no}: ${esc(p.display_name)}</strong></div>
+            <div>
+              <strong>Slot ${p.slot_no}: ${esc(p.display_name)}</strong>
+              ${capStr !== '—' ? `<div class="page-meta tabular" style="font-size:11.5px;">Phone: ${esc(capStr)}</div>` : ''}
+            </div>
             <div class="${hbInfo.cls}">${hbInfo.label} · ${relay}</div>
             <div class="tabular">${res}</div>
             <div class="tabular">${br}</div>
@@ -1544,13 +1938,23 @@ async function renderMonitorView(eventId) {
             renderMonitorData(lastStateData);
           } else {
             activePreviewPid = pid;
+            const pObj = onAir.find((x) => x.id === pid);
             pvLabel.textContent = `Listening to Slot feed #${pid}`;
             pvTakeBtn.disabled = true;
             pvStopBtn.disabled = false;
             pvListenBtn.disabled = false;
             pvListenBtn.textContent = 'Listen: On';
+            pvTile.connEl.hidden = false;
+            pvTile.connEl.textContent = 'Connecting preview...';
+            updateWallTileAppearance(pvTile, {
+              fitMode: pObj?.slot_fit_mode || data.event.wall_fit_mode || 'fit',
+              tileBg: data.event.wall_tile_bg || 'blur',
+              tileBgColor: data.event.wall_tile_bg_color || '#090d16',
+              mirrored: Boolean(Number(data.event.mirror_front_wall || 0) === 1 && pObj?.facing_mode === 'user'),
+              captureInfo: pObj?.capture_settings || null,
+            });
             await startPrivatePreview(eventId, pid, {
-              videoEl: pvVideo,
+              tile: pvTile,
               meterFillEl: document.getElementById(`hmeter-${pid}`) || pvMeter,
               unmuteAudio: true,
             });
@@ -1573,32 +1977,46 @@ async function renderMonitorView(eventId) {
     const candEl = document.getElementById('mon-candidates');
     candEl.innerHTML = waiting.length === 0
       ? '<div class="page-meta">Lobby is empty.</div>'
-      : waiting.map((p) => `
-        <article class="part-card">
-          <div class="part-thumb">
-            ${p.has_thumb ? `<img src="/api/admin/events/${eventId}/participants/${p.id}/thumb?v=${p.thumb_version}" alt="${esc(p.display_name)}">` : '<div class="part-thumb-empty">No thumb</div>'}
-          </div>
-          <div class="part-body">
-            <div class="part-name">${esc(p.display_name)}</div>
-            <div class="part-actions">
-              <button type="button" class="btn btn-secondary btn-sm c-prev" data-pid="${p.id}">Preview</button>
-              <button type="button" class="btn btn-primary btn-sm c-air" data-pid="${p.id}">Put on Air</button>
+      : waiting.map((p) => {
+        const capStr = formatCaptureSummary(p);
+        return `
+          <article class="part-card">
+            <div class="part-thumb">
+              ${p.has_thumb ? `<img src="/api/admin/events/${eventId}/participants/${p.id}/thumb?v=${p.thumb_version}" alt="${esc(p.display_name)}">` : '<div class="part-thumb-empty">No thumb</div>'}
             </div>
-          </div>
-        </article>
-      `).join('');
+            <div class="part-body">
+              <div class="part-name">${esc(p.display_name)}</div>
+              ${capStr !== '—' ? `<div class="part-meta tabular">${esc(capStr)}</div>` : ''}
+              <div class="part-actions">
+                <button type="button" class="btn btn-secondary btn-sm c-prev" data-pid="${p.id}">Preview</button>
+                <button type="button" class="btn btn-primary btn-sm c-air" data-pid="${p.id}">Put on Air</button>
+              </div>
+            </div>
+          </article>
+        `;
+      }).join('');
 
     candEl.querySelectorAll('.c-prev').forEach((b) => {
       b.addEventListener('click', async () => {
         const pid = Number(b.dataset.pid);
         const p = waiting.find((x) => x.id === pid);
         activePreviewPid = pid;
-        pvLabel.textContent = `Private Preview: ${p ? p.display_name : '#' + pid}`;
+        const capStr = p ? formatCaptureSummary(p) : '—';
+        pvLabel.textContent = `Private Preview: ${p ? p.display_name : '#' + pid}${capStr !== '—' ? ` (${capStr})` : ''}`;
         pvTakeBtn.disabled = false;
         pvStopBtn.disabled = false;
         pvListenBtn.disabled = false;
         pvListenBtn.textContent = 'Listen: Off';
-        await startPrivatePreview(eventId, pid, { videoEl: pvVideo, meterFillEl: pvMeter, unmuteAudio: false });
+        pvTile.connEl.hidden = false;
+        pvTile.connEl.textContent = 'Connecting preview...';
+        updateWallTileAppearance(pvTile, {
+          fitMode: 'fit',
+          tileBg: data.event.wall_tile_bg || 'blur',
+          tileBgColor: data.event.wall_tile_bg_color || '#090d16',
+          mirrored: false,
+          captureInfo: p?.capture_settings || null,
+        });
+        await startPrivatePreview(eventId, pid, { tile: pvTile, meterFillEl: pvMeter, unmuteAudio: false });
       });
     });
 
@@ -1648,11 +2066,11 @@ async function uploadImageFiles(fileList, visibility, tags) {
   return api('/api/admin/images/upload', { method: 'POST', body: fd });
 }
 
-async function openLogoPickerModal(onSelect) {
+async function openLogoPickerModal(onSelect, modalTitle = 'Select QR Logo from Image Bank') {
   const data = await api('/api/admin/images');
   const images = data.images || [];
   openModal(`
-    <div class="panel-head"><h2 style="margin:0;">Select QR Logo from Image Bank</h2><button type="button" class="btn btn-ghost btn-sm" id="lp-close">Close</button></div>
+    <div class="panel-head"><h2 style="margin:0;">${esc(modalTitle)}</h2><button type="button" class="btn btn-ghost btn-sm" id="lp-close">Close</button></div>
     <div class="dropzone" id="lp-dropzone">
       Drop PNG, JPG, WebP, or SVG here (max 2 MB) or click to upload directly to the Image Bank
       <input type="file" id="lp-file" accept=".png,.jpg,.jpeg,.webp,.svg,image/*" multiple hidden>
@@ -1663,7 +2081,7 @@ async function openLogoPickerModal(onSelect) {
           <div class="bank-thumb"><img src="/uploads/logos/${esc(img.thumb_path)}" alt="${esc(img.label)}"></div>
           <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(img.label)}</div>
           <div class="page-meta">Used by ${img.use_count} event(s)</div>
-          <button type="button" class="btn btn-primary btn-sm lp-pick" data-id="${img.id}">Select Logo</button>
+          <button type="button" class="btn btn-primary btn-sm lp-pick" data-id="${img.id}">Select Image</button>
         </div>
       `).join('') || '<div class="page-meta">No images yet. Upload one above.</div>'}
     </div>
@@ -1912,7 +2330,10 @@ async function renderAccountsView() {
   mainEl.innerHTML = `
     <div class="page-head">
       <div><h1>Accounts &amp; Permissions</h1><div class="page-meta">Manage Super Admins, Hosts, Moderators, and per-event access</div></div>
-      <button type="button" class="btn btn-primary" id="acc-new-btn">Add Account</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary" id="acc-turn-btn">TURN / ICE Settings</button>
+        <button type="button" class="btn btn-primary" id="acc-new-btn">Add Account</button>
+      </div>
     </div>
     <section class="panel data-table-wrap">
       <table class="data-table">
@@ -2029,6 +2450,7 @@ async function renderAccountsView() {
     });
   }
 
+  document.getElementById('acc-turn-btn').addEventListener('click', () => openTurnConfigModal());
   document.getElementById('acc-new-btn').addEventListener('click', () => openAccountModal(null));
   mainEl.querySelectorAll('.acc-edit').forEach((b) => b.addEventListener('click', () => openAccountModal(accounts.find((x) => x.id === Number(b.dataset.id)))));
   mainEl.querySelectorAll('.acc-rev').forEach((b) => b.addEventListener('click', async () => {
@@ -2113,6 +2535,459 @@ async function renderAuditView() {
   document.getElementById('al-event').addEventListener('change', (e) => { fEvent = e.target.value; loadAudit(); });
   document.getElementById('al-q').addEventListener('input', (e) => { fQuery = e.target.value; loadAudit(); });
   loadAudit();
+}
+
+// ---------------- CAMERA TELEMETRY & FRAME CHECK VIEW ----------------
+
+function formatCaptureSummary(p) {
+  const cap = p?.capture_settings;
+  if (!cap || typeof cap !== 'object') {
+    if (p?.facing_mode === 'user') return 'Front cam';
+    if (p?.facing_mode === 'environment') return 'Rear cam';
+    return '—';
+  }
+  const parts = [];
+  const w = Number(cap.width || cap.videoWidth || 0);
+  const h = Number(cap.height || cap.videoHeight || 0);
+  if (w > 0 && h > 0) {
+    parts.push(`${w}×${h}`);
+    parts.push(formatAspectLabel(w, h));
+  }
+  if (cap.facingMode === 'user') parts.push('Front');
+  else if (cap.facingMode === 'environment') parts.push('Rear');
+  if (typeof cap.zoom === 'number') parts.push(`${cap.zoom.toFixed(1).replace(/\.0$/, '')}x`);
+  if (cap.frameRate) parts.push(`${Math.round(Number(cap.frameRate))}fps`);
+  return parts.length ? parts.join(' · ') : '—';
+}
+
+async function renderFrameCheckView() {
+  activeEventId = null;
+  let events = [];
+  try {
+    const evRes = await api('/api/admin/events');
+    events = evRes.events || [];
+  } catch {}
+
+  const qs = new URLSearchParams(window.location.search);
+  let selectedEventId = qs.get('event') ? Number(qs.get('event')) : (events[0]?.id ? Number(events[0].id) : 0);
+  const canHost = ['super_admin', 'host'].includes(cfg.user.role);
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Frame Check &amp; Crop Diagnostics</h1>
+        <div class="page-meta">Verify zero zoom &amp; zero crop across capture settings, Fit/Fill modes, and 1920×1080 OBS wall tiles</div>
+      </div>
+      <div class="page-actions">
+        ${selectedEventId ? `<a href="/admin/events/${selectedEventId}" data-nav="/admin/events/${selectedEventId}" class="btn btn-secondary btn-sm">Back to Studio</a>` : ''}
+      </div>
+    </div>
+
+    <div class="fc-layout">
+      <section class="panel">
+        <div class="panel-head" style="flex-wrap:wrap;">
+          <h2 class="panel-title">16:9 Wall Tile Simulator (1920×1080 Scale)</h2>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;">
+              <input type="checkbox" id="fc-overlay-chk" checked> Show frame corners &amp; readout
+            </label>
+          </div>
+        </div>
+        <div class="fc-stage-16x9">
+          <div class="wall-grid layout-single" id="fc-grid"></div>
+        </div>
+        <div class="page-meta" style="margin-top:8px;">
+          Green corners indicate <strong>100% of the captured frame is visible</strong> (Fit mode). Amber corners indicate pixels are being cropped (Fill mode).
+        </div>
+      </section>
+
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:0;">
+        <section class="panel" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="panel-head" style="margin-bottom:0;">
+            <h2 class="panel-title">Source &amp; Display Settings</h2>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button type="button" class="btn btn-primary btn-sm" id="fc-cam-start-btn">Start Local Camera Test</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="fc-cam-stop-btn" hidden>Stop Local Camera</button>
+            <select id="fc-cam-device" style="min-height:32px;flex:1;min-width:160px;padding:4px 8px;border-radius:6px;border:1px solid var(--border-strong);background:#0d1422;color:#f8fafc;" hidden>
+              <option value="">Default camera</option>
+            </select>
+          </div>
+
+          <label class="field" id="fc-zoom-wrap" hidden>
+            <span>Local Camera Zoom: <strong id="fc-zoom-val">1x</strong></span>
+            <input type="range" id="fc-zoom-slider" min="1" max="1" step="0.1" value="1">
+          </label>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <label class="field">
+              <span>Inspect Event Feed</span>
+              <select id="fc-event-select">
+                <option value="">(None / Local Only)</option>
+                ${events.map((ev) => `<option value="${ev.id}" ${Number(ev.id) === selectedEventId ? 'selected' : ''}>${esc(ev.title)}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field">
+              <span>Live Guest</span>
+              <select id="fc-part-select">
+                <option value="">Select connected guest...</option>
+              </select>
+            </label>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <label class="field">
+              <span>Wall Layout</span>
+              <select id="fc-layout">
+                <option value="single">Single (1920×1080)</option>
+                <option value="split2">Split 2</option>
+                <option value="grid4">Grid 4</option>
+                <option value="pip">Picture-in-Picture</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Fit Mode</span>
+              <select id="fc-fit">
+                <option value="fit">Fit (no crop, default)</option>
+                <option value="fill">Fill (crops the picture)</option>
+              </select>
+            </label>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;">
+            <label class="field">
+              <span>Tile Background</span>
+              <select id="fc-tilebg">
+                <option value="blur">Blurred fill (default)</option>
+                <option value="solid">Solid color</option>
+                <option value="transparent">Transparent</option>
+              </select>
+            </label>
+            <input type="color" id="fc-tilebg-color" value="#090d16" style="width:44px;height:36px;" hidden>
+          </div>
+
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+            <input type="checkbox" id="fc-mirror"> Mirror front cameras on the wall
+          </label>
+
+          <details class="adv-details">
+            <summary>Advanced display options</summary>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+              <input type="checkbox" id="fc-stretch"> Stretch video to fill tile (distorts aspect ratio)
+            </label>
+          </details>
+
+          ${canHost ? `<button type="button" class="btn btn-secondary btn-sm" id="fc-save-event-btn" ${selectedEventId ? '' : 'disabled'}>Save Display Settings to Selected Event</button>` : ''}
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Live Frame Telemetry</h2></div>
+          <div class="fc-metrics-grid">
+            <div class="fc-metric-box"><div class="fc-metric-label">Captured Res</div><div class="fc-metric-val tabular" id="fc-m-cap">—</div></div>
+            <div class="fc-metric-box"><div class="fc-metric-label">Stream Res</div><div class="fc-metric-val tabular" id="fc-m-stream">—</div></div>
+            <div class="fc-metric-box"><div class="fc-metric-label">Aspect Ratio</div><div class="fc-metric-val tabular" id="fc-m-ar">—</div></div>
+            <div class="fc-metric-box"><div class="fc-metric-label">Camera Zoom</div><div class="fc-metric-val tabular" id="fc-m-zoom">—</div></div>
+            <div class="fc-metric-box"><div class="fc-metric-label">Tile @ Preview / OBS</div><div class="fc-metric-val tabular" id="fc-m-tile">—</div></div>
+            <div class="fc-metric-box"><div class="fc-metric-label">Frame Visible</div><div class="fc-metric-val tabular" id="fc-m-vis">—</div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+
+  const gridEl = document.getElementById('fc-grid');
+  const overlayChk = document.getElementById('fc-overlay-chk');
+  const eventSel = document.getElementById('fc-event-select');
+  const partSel = document.getElementById('fc-part-select');
+  const layoutSel = document.getElementById('fc-layout');
+  const fitSel = document.getElementById('fc-fit');
+  const stretchChk = document.getElementById('fc-stretch');
+  const tileBgSel = document.getElementById('fc-tilebg');
+  const tileBgColEl = document.getElementById('fc-tilebg-color');
+  const mirrorChk = document.getElementById('fc-mirror');
+  const camStartBtn = document.getElementById('fc-cam-start-btn');
+  const camStopBtn = document.getElementById('fc-cam-stop-btn');
+  const camDevSel = document.getElementById('fc-cam-device');
+  const zoomWrap = document.getElementById('fc-zoom-wrap');
+  const zoomSlider = document.getElementById('fc-zoom-slider');
+  const zoomVal = document.getElementById('fc-zoom-val');
+  const saveEventBtn = document.getElementById('fc-save-event-btn');
+
+  let localStream = null;
+  let localCaptureInfo = null;
+  let remoteParticipant = null;
+  let remoteParticipants = [];
+  let stageTiles = [];
+
+  function activeFitMode() {
+    return stretchChk.checked ? 'stretch' : fitSel.value;
+  }
+
+  function updateMetricsCards(metrics, capInfo) {
+    const cap = capInfo || localCaptureInfo || remoteParticipant?.capture_settings || {};
+    const cw = Number(cap.width || metrics?.videoWidth || 0);
+    const ch = Number(cap.height || metrics?.videoHeight || 0);
+    document.getElementById('fc-m-cap').textContent = cw && ch ? `${cw}×${ch}` : '—';
+    document.getElementById('fc-m-stream').textContent = metrics?.videoWidth ? `${metrics.videoWidth}×${metrics.videoHeight}` : '—';
+    document.getElementById('fc-m-ar').textContent = metrics?.aspectLabel || (cw && ch ? formatAspectLabel(cw, ch) : '—');
+    document.getElementById('fc-m-zoom').textContent = typeof cap.zoom === 'number' ? `${cap.zoom.toFixed(2).replace(/\.?0+$/, '')}x` : 'N/A';
+
+    if (metrics && metrics.tileWidth > 0 && gridEl.clientWidth > 0) {
+      const obsScale = 1920 / gridEl.clientWidth;
+      const obsW = Math.round(metrics.tileWidth * obsScale);
+      const obsH = Math.round(metrics.tileHeight * obsScale);
+      document.getElementById('fc-m-tile').textContent = `${metrics.tileWidth}×${metrics.tileHeight} (OBS ${obsW}×${obsH})`;
+      const visEl = document.getElementById('fc-m-vis');
+      visEl.textContent = metrics.croppedPct > 0.5
+        ? `${metrics.visiblePct}% (Cropped ${metrics.croppedPct}%)`
+        : `${metrics.visiblePct}% (No crop)`;
+      visEl.className = `fc-metric-val tabular ${metrics.croppedPct > 0.5 ? 'status-text-amber' : 'status-text-green'}`;
+    }
+  }
+
+  function rebuildTiles() {
+    const layout = layoutSel.value;
+    gridEl.className = `wall-grid layout-${layout}`;
+    const count = layout === 'single' ? 1 : (layout === 'split2' ? 2 : 4);
+    gridEl.innerHTML = '';
+    stageTiles = [];
+    for (let i = 0; i < count; i++) {
+      const t = createWallTile({
+        onMetricsChange: i === 0 ? (m) => updateMetricsCards(m, localCaptureInfo || remoteParticipant?.capture_settings) : null,
+      });
+      t.root.dataset.pos = String(i);
+      t.nameEl.textContent = i === 0 ? (remoteParticipant?.display_name || 'Frame Check Camera') : `Sample Slot ${i + 1}`;
+      t.msgEl.hidden = true;
+      t.connEl.textContent = i === 0 ? 'Start local camera or select a guest' : 'Layout preview slot';
+      gridEl.appendChild(t.root);
+      stageTiles.push(t);
+    }
+    syncTileStyles();
+    const activeStream = localStream || previewPeer?.stream || null;
+    if (activeStream && stageTiles[0]) {
+      attachStreamToWallTile(stageTiles[0], activeStream);
+      stageTiles[0].video.muted = true;
+      stageTiles[0].video.play().catch(() => {});
+    }
+  }
+
+  function syncTileStyles() {
+    const fitMode = activeFitMode();
+    const tileBg = tileBgSel.value;
+    const tileBgColor = tileBgColEl.value;
+    tileBgColEl.hidden = tileBg !== 'solid';
+    const cap = localStream ? localCaptureInfo : (remoteParticipant?.capture_settings || null);
+    const fm = localStream ? (localCaptureInfo?.facingMode || 'unknown') : (remoteParticipant?.facing_mode || 'unknown');
+    const mirrored = mirrorChk.checked && fm === 'user';
+
+    stageTiles.forEach((t, idx) => {
+      updateWallTileAppearance(t, {
+        fitMode,
+        tileBg,
+        tileBgColor,
+        mirrored: idx === 0 ? mirrored : false,
+        frameCheck: overlayChk.checked,
+        captureInfo: idx === 0 ? cap : null,
+      });
+    });
+    if (stageTiles[0]) {
+      updateMetricsCards(computeVideoFrameMetrics(stageTiles[0].video, stageTiles[0].root, fitMode), cap);
+    }
+  }
+
+  async function loadEventData(evId) {
+    if (saveEventBtn) saveEventBtn.disabled = !evId;
+    if (!evId) {
+      remoteParticipants = [];
+      partSel.innerHTML = '<option value="">Select connected guest...</option>';
+      return;
+    }
+    try {
+      const d = await api(`/api/admin/events/${evId}/state`);
+      const ev = d.event;
+      layoutSel.value = ev.layout || 'single';
+      const fm = ev.wall_fit_mode || 'fit';
+      fitSel.value = fm === 'fill' ? 'fill' : 'fit';
+      stretchChk.checked = fm === 'stretch';
+      tileBgSel.value = ev.wall_tile_bg || 'blur';
+      tileBgColEl.value = ev.wall_tile_bg_color || '#090d16';
+      mirrorChk.checked = Number(ev.mirror_front_wall || 0) === 1;
+      remoteParticipants = d.participants || [];
+      partSel.innerHTML = `<option value="">Select connected guest (${remoteParticipants.length})...</option>` +
+        remoteParticipants.map((p) => `<option value="${p.id}">${esc(p.display_name)} (${esc(p.status)})</option>`).join('');
+      rebuildTiles();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+
+  function stopLocalCamera() {
+    if (localStream) {
+      localStream.getTracks().forEach((tr) => tr.stop());
+      localStream = null;
+    }
+    localCaptureInfo = null;
+    camStartBtn.hidden = false;
+    camStopBtn.hidden = true;
+    camDevSel.hidden = true;
+    zoomWrap.hidden = true;
+    if (stageTiles[0] && !previewPeer?.stream) {
+      attachStreamToWallTile(stageTiles[0], null);
+      stageTiles[0].connEl.hidden = false;
+      stageTiles[0].connEl.textContent = 'Start local camera or select a guest';
+    }
+    syncTileStyles();
+  }
+
+  async function startLocalCamera(deviceId = '') {
+    await stopPreviewSession(selectedEventId ? true : false);
+    activeEventId = null;
+    remoteParticipant = null;
+    partSel.value = '';
+    if (localStream) {
+      localStream.getTracks().forEach((tr) => tr.stop());
+    }
+    const isPort = window.innerHeight > window.innerWidth;
+    const vc = {
+      width: { ideal: isPort ? 720 : 1280 },
+      height: { ideal: isPort ? 1280 : 720 },
+      frameRate: { ideal: 30 },
+    };
+    if (deviceId) vc.deviceId = { ideal: deviceId };
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+    } catch (err) {
+      toast(`Camera failed: ${err.message}`);
+      return;
+    }
+    const track = localStream.getVideoTracks()[0];
+    if (track?.getCapabilities) {
+      const caps = track.getCapabilities();
+      if (caps?.zoom && typeof caps.zoom.min === 'number') {
+        const minZ = caps.zoom.min;
+        try { await track.applyConstraints({ advanced: [{ zoom: minZ }] }); } catch {}
+        zoomSlider.min = String(caps.zoom.min);
+        zoomSlider.max = String(caps.zoom.max);
+        zoomSlider.step = String(caps.zoom.step || 0.1);
+        zoomSlider.value = String(minZ);
+        zoomVal.textContent = `${minZ.toFixed(1).replace(/\.0$/, '')}x`;
+        zoomWrap.hidden = caps.zoom.max <= caps.zoom.min;
+      } else {
+        zoomWrap.hidden = true;
+      }
+    }
+    const s = track?.getSettings ? track.getSettings() : {};
+    localCaptureInfo = {
+      width: Number(s.width || 0),
+      height: Number(s.height || 0),
+      frameRate: Number(s.frameRate || 0),
+      aspectRatio: Number(s.aspectRatio || 0),
+      facingMode: s.facingMode || 'unknown',
+      zoom: typeof s.zoom === 'number' ? s.zoom : null,
+      label: track?.label || '',
+    };
+
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const cams = devs.filter((d) => d.kind === 'videoinput');
+      camDevSel.innerHTML = cams.map((c, i) => `<option value="${esc(c.deviceId)}" ${c.deviceId === s.deviceId ? 'selected' : ''}>${esc(c.label || `Camera ${i + 1}`)}</option>`).join('');
+      camDevSel.hidden = cams.length === 0;
+    } catch {}
+
+    camStartBtn.hidden = true;
+    camStopBtn.hidden = false;
+    if (stageTiles[0]) {
+      stageTiles[0].nameEl.textContent = track?.label || 'Local Camera Test';
+      attachStreamToWallTile(stageTiles[0], localStream);
+      stageTiles[0].video.muted = true;
+      stageTiles[0].video.play().catch(() => {});
+    }
+    syncTileStyles();
+  }
+
+  camStartBtn.addEventListener('click', () => startLocalCamera(camDevSel.value));
+  camStopBtn.addEventListener('click', stopLocalCamera);
+  camDevSel.addEventListener('change', () => startLocalCamera(camDevSel.value));
+  zoomSlider.addEventListener('input', async () => {
+    const track = localStream?.getVideoTracks?.()[0];
+    const z = Number(zoomSlider.value);
+    zoomVal.textContent = `${z.toFixed(1).replace(/\.0$/, '')}x`;
+    if (track?.applyConstraints) {
+      try {
+        await track.applyConstraints({ advanced: [{ zoom: z }] });
+        const s = track.getSettings();
+        if (localCaptureInfo) {
+          localCaptureInfo.zoom = typeof s.zoom === 'number' ? s.zoom : z;
+          localCaptureInfo.width = Number(s.width || localCaptureInfo.width);
+          localCaptureInfo.height = Number(s.height || localCaptureInfo.height);
+        }
+        syncTileStyles();
+      } catch {}
+    }
+  });
+
+  eventSel.addEventListener('change', () => {
+    selectedEventId = eventSel.value ? Number(eventSel.value) : 0;
+    loadEventData(selectedEventId);
+  });
+
+  partSel.addEventListener('change', async () => {
+    const pid = partSel.value ? Number(partSel.value) : 0;
+    stopLocalCamera();
+    if (!pid || !selectedEventId) {
+      activeEventId = null;
+      remoteParticipant = null;
+      await stopPreviewSession(true);
+      rebuildTiles();
+      return;
+    }
+    remoteParticipant = remoteParticipants.find((p) => p.id === pid) || null;
+    activeEventId = selectedEventId;
+    if (stageTiles[0]) {
+      stageTiles[0].nameEl.textContent = remoteParticipant?.display_name || `Guest #${pid}`;
+      stageTiles[0].connEl.hidden = false;
+      stageTiles[0].connEl.textContent = 'Connecting WebRTC preview...';
+    }
+    await startPrivatePreview(selectedEventId, pid, { tile: stageTiles[0], unmuteAudio: false });
+    syncTileStyles();
+  });
+
+  layoutSel.addEventListener('change', rebuildTiles);
+  [fitSel, stretchChk, tileBgSel, tileBgColEl, mirrorChk, overlayChk].forEach((el) => {
+    el.addEventListener('input', syncTileStyles);
+    el.addEventListener('change', syncTileStyles);
+  });
+
+  if (saveEventBtn) {
+    saveEventBtn.addEventListener('click', async () => {
+      if (!selectedEventId) return;
+      try {
+        await api(`/api/admin/events/${selectedEventId}/settings`, {
+          method: 'POST',
+          json: {
+            wall_fit_mode: activeFitMode(),
+            wall_tile_bg: tileBgSel.value,
+            wall_tile_bg_color: tileBgColEl.value,
+            mirror_front_wall: mirrorChk.checked,
+          },
+        });
+        toast('Display settings saved to event');
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  }
+
+  frameCheckCleanup = () => {
+    stopLocalCamera();
+    activeEventId = null;
+  };
+
+  rebuildTiles();
+  if (selectedEventId) {
+    await loadEventData(selectedEventId);
+  }
 }
 
 updateNavActive(currentRoute);

@@ -33,7 +33,7 @@ class ImageBank
     public static function syncUseCounts(): void
     {
         Database::execute(
-            'UPDATE media_images SET use_count = (SELECT COUNT(*) FROM events WHERE events.logo_image_id = media_images.id)'
+            'UPDATE media_images SET use_count = (SELECT COUNT(*) FROM events WHERE events.logo_image_id = media_images.id OR events.join_logo_image_id = media_images.id)'
         );
     }
 
