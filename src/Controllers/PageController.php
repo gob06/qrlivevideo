@@ -41,6 +41,7 @@ class PageController
             'pollIdleMs' => Bootstrap::$config['poll_interval_idle_ms'],
             'pollFastMs' => Bootstrap::$config['poll_interval_fast_ms'],
             'thumbIntervalMs' => Bootstrap::$config['thumbnail_interval_ms'],
+            'termsOfService' => Bootstrap::termsOfService(),
         ];
         header('Cache-Control: no-store, no-cache, must-revalidate, private');
         header('Pragma: no-cache');

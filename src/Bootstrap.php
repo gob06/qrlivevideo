@@ -434,6 +434,43 @@ class Bootstrap
         }
         return false;
     }
+
+    public static function defaultTermsOfService(): string
+    {
+        return "By joining the live screen, you confirm and agree to the following:\n\n"
+            . "1. Broadcast Consent: You grant the event organizer permission to capture and display your live camera video and microphone audio on venue screens and event livestreams.\n\n"
+            . "2. Respectful Conduct: Keep your camera feed appropriate for a public audience. Any offensive, disruptive, or unauthorized content may be removed or banned immediately by the event host.\n\n"
+            . "3. Camera & Audio Control: The event host decides when your feed goes on air, which layout slot it occupies, and whether venue audio is muted or enabled.\n\n"
+            . "4. Temporary Session Data: Your live feed is streamed in real time and is not permanently archived by this application once the event ends or you disconnect.";
+    }
+
+    public static function termsOfServicePayload(): array
+    {
+        $default = self::defaultTermsOfService();
+        try {
+            $row = Database::fetchOne("SELECT setting_value, updated_at FROM system_settings WHERE setting_key = 'terms_of_service'");
+            if ($row && trim((string)($row['setting_value'] ?? '')) !== '') {
+                return [
+                    'terms_of_service' => (string)$row['setting_value'],
+                    'is_custom' => true,
+                    'updated_at' => (string)($row['updated_at'] ?? ''),
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Ignore if DB not yet initialized
+        }
+        return [
+            'terms_of_service' => $default,
+            'is_custom' => false,
+            'updated_at' => '',
+        ];
+    }
+
+    public static function termsOfService(): string
+    {
+        $p = self::termsOfServicePayload();
+        return (string)$p['terms_of_service'];
+    }
 }
 
 function e(?string $str): string

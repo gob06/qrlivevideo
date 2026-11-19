@@ -44,6 +44,7 @@ use function App\e;
 
         <button type="submit" class="btn btn-primary btn-lg" id="aud-start-btn">Start Camera &amp; Join</button>
       </form>
+      <p class="aud-tos-note">By Joining to the live screen, you agree to our <button type="button" class="aud-tos-link" id="aud-tos-open">Terms of Service</button>.</p>
     </section>
 
     <section class="aud-stage" id="aud-step-stage" hidden>
@@ -56,7 +57,6 @@ use function App\e;
         <div class="aud-onair-frame" id="aud-onair-frame" hidden>
           <span class="onair-tag">ON AIR</span>
         </div>
-        <div class="aud-preview-note" id="aud-preview-note">Previewing locally · Full uncropped frame</div>
       </div>
 
       <div class="aud-alert" id="aud-stage-error" hidden></div>
@@ -80,6 +80,16 @@ use function App\e;
       <button type="button" class="btn btn-primary btn-lg" id="aud-rejoin-btn">Return to Join Screen</button>
     </section>
   </main>
+
+  <div class="aud-modal-backdrop" id="aud-tos-modal" hidden>
+    <div class="aud-modal" role="dialog" aria-modal="true" aria-labelledby="aud-tos-title">
+      <div class="aud-modal-head">
+        <h2 id="aud-tos-title">Terms of Service</h2>
+        <button type="button" class="btn btn-secondary btn-sm" id="aud-tos-close">Close</button>
+      </div>
+      <div class="aud-modal-body" id="aud-tos-body"></div>
+    </div>
+  </div>
 
   <script type="module" src="/assets/js/audience.js?v=<?= e(\App\Bootstrap::assetVersion()) ?>"></script>
 </body>

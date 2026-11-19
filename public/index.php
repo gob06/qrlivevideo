@@ -215,6 +215,12 @@ try {
     if ($path === '/api/admin/turn-config' && $method === 'POST') {
         AdminApiController::updateTurnConfig();
     }
+    if ($path === '/api/admin/terms-of-service' && $method === 'GET') {
+        AdminApiController::getTermsOfService();
+    }
+    if ($path === '/api/admin/terms-of-service' && $method === 'POST') {
+        AdminApiController::updateTermsOfService();
+    }
 
     if (str_starts_with($path, '/api/')) {
         jsonResponse(['error' => 'Endpoint not found.'], 404);

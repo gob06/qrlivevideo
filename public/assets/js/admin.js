@@ -255,6 +255,79 @@ async function openTurnConfigModal(onSaved = null) {
   });
 }
 
+async function openTermsOfServiceModal() {
+  let st = null;
+  try {
+    st = await api('/api/admin/terms-of-service');
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+
+  openModal(`
+    <h2 style="margin:0;">Edit Terms of Service</h2>
+    <p class="page-meta" style="margin:0;">Shown when audience members tap <strong>Terms of Service</strong> on the Join the Live Screen page.</p>
+    <div id="tos-status" class="adm-alert ${st.is_custom ? 'adm-alert-ok' : 'adm-alert-warn'}" style="margin:4px 0;">
+      ${st.is_custom ? 'Custom Terms of Service active.' : 'Currently using default Terms of Service.'}
+    </div>
+    <div id="tos-err" class="adm-alert adm-alert-error" hidden></div>
+    <form id="tos-form" class="adm-auth-form">
+      <label class="field">
+        <span>Terms of Service Text</span>
+        <textarea id="tos-textarea" rows="11" maxlength="10000" required style="width:100%;resize:vertical;line-height:1.5;font-family:inherit;">${esc(st.terms_of_service || '')}</textarea>
+      </label>
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <div>
+          ${st.is_custom ? '<button type="button" class="btn btn-ghost btn-sm" id="tos-reset-btn">Reset to Default</button>' : ''}
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-secondary" id="tos-cancel-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="tos-save-btn">Save Terms</button>
+        </div>
+      </div>
+    </form>
+  `);
+
+  const errBox = document.getElementById('tos-err');
+  const saveBtn = document.getElementById('tos-save-btn');
+  const textEl = document.getElementById('tos-textarea');
+
+  document.getElementById('tos-cancel-btn').addEventListener('click', closeModal);
+
+  document.getElementById('tos-reset-btn')?.addEventListener('click', async () => {
+    errBox.hidden = true;
+    try {
+      const res = await api('/api/admin/terms-of-service', { method: 'POST', json: { action: 'reset' } });
+      toast(res.message || 'Terms of Service reset to default');
+      closeModal();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+    }
+  });
+
+  document.getElementById('tos-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    errBox.hidden = true;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+    try {
+      const res = await api('/api/admin/terms-of-service', {
+        method: 'POST',
+        json: { terms_of_service: textEl.value },
+      });
+      toast(res.message || 'Terms of Service updated');
+      closeModal();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save Terms';
+    }
+  });
+}
+
 function formatDuration(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -466,6 +539,7 @@ async function renderEventsListView() {
           <div class="page-meta">${events.length} event(s) available for your account</div>
         </div>
         <div class="page-actions">
+          ${canCreate ? '<button type="button" class="btn btn-secondary" id="events-tos-btn">Terms of Service</button>' : ''}
           ${canCreate ? '<button type="button" class="btn btn-primary" id="new-event-btn">Create Event</button>' : ''}
         </div>
       </div>
@@ -551,6 +625,7 @@ async function renderEventsListView() {
       });
     };
 
+    document.getElementById('events-tos-btn')?.addEventListener('click', openTermsOfServiceModal);
     document.getElementById('new-event-btn')?.addEventListener('click', openCreate);
     document.getElementById('empty-create-btn')?.addEventListener('click', openCreate);
   } catch (err) {
@@ -850,6 +925,7 @@ async function renderEventStudioView(eventId) {
                 </details>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
                   <button type="submit" class="btn btn-primary btn-sm">Save Settings</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="ev-edit-tos-btn">Terms of Service</button>
                   <button type="button" class="btn btn-secondary btn-sm" id="ev-regen-key-btn">Regenerate Wall Key</button>
                 </div>
               </form>
@@ -1232,6 +1308,7 @@ async function renderEventStudioView(eventId) {
         toast(err.message);
       }
     });
+    document.getElementById('ev-edit-tos-btn')?.addEventListener('click', openTermsOfServiceModal);
 
     // Event Settings form
     const initFit = initial.event.wall_fit_mode || 'fit';

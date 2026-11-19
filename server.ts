@@ -90,6 +90,44 @@ function readTurnOverride(): TurnOverride | null {
   return null;
 }
 
+const DEFAULT_TERMS_OF_SERVICE = [
+  'By joining the live screen, you confirm and agree to the following:',
+  '',
+  '1. Broadcast Consent: You grant the event organizer permission to capture and display your live camera video and microphone audio on venue screens and event livestreams.',
+  '',
+  '2. Respectful Conduct: Keep your camera feed appropriate for a public audience. Any offensive, disruptive, or unauthorized content may be removed or banned immediately by the event host.',
+  '',
+  '3. Camera & Audio Control: The event host decides when your feed goes on air, which layout slot it occupies, and whether venue audio is muted or enabled.',
+  '',
+  '4. Temporary Session Data: Your live feed is streamed in real time and is not permanently archived by this application once the event ends or you disconnect.',
+].join('\n');
+
+function getTermsOfServicePayload(): { terms_of_service: string; is_custom: boolean; updated_at: string } {
+  try {
+    if (db) {
+      const row = db.prepare("SELECT setting_value, updated_at FROM system_settings WHERE setting_key = 'terms_of_service'").get() as
+        | { setting_value?: string; updated_at?: string }
+        | undefined;
+      if (row && String(row.setting_value || '').trim() !== '') {
+        return {
+          terms_of_service: String(row.setting_value),
+          is_custom: true,
+          updated_at: String(row.updated_at || ''),
+        };
+      }
+    }
+  } catch {}
+  return {
+    terms_of_service: DEFAULT_TERMS_OF_SERVICE,
+    is_custom: false,
+    updated_at: '',
+  };
+}
+
+function getTermsOfService(): string {
+  return getTermsOfServicePayload().terms_of_service;
+}
+
 function getEffectiveTurnConfig(): { urls: string[]; user: string; pass: string; source: 'db' | 'env' | 'none' } {
   const override = readTurnOverride();
   if (override) {
@@ -993,6 +1031,7 @@ app.get('/join/:slug', async (req, res) => {
     pollIdleMs: CONFIG.pollIdleMs,
     pollFastMs: CONFIG.pollFastMs,
     thumbIntervalMs: CONFIG.thumbIntervalMs,
+    termsOfService: getTermsOfService(),
   };
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.type('html').send(`<!doctype html>
@@ -1029,6 +1068,7 @@ app.get('/join/:slug', async (req, res) => {
         <label class="consent-row"><input type="checkbox" id="aud-consent" required><span>My camera and microphone may be shown on the venue screen.</span></label>
         <button type="submit" class="btn btn-primary btn-lg" id="aud-start-btn">Start Camera &amp; Join</button>
       </form>
+      <p class="aud-tos-note">By Joining to the live screen, you agree to our <button type="button" class="aud-tos-link" id="aud-tos-open">Terms of Service</button>.</p>
     </section>
     <section class="aud-stage" id="aud-step-stage" hidden>
       <div class="aud-orient-hint" id="aud-orient-hint" hidden>
@@ -1037,7 +1077,6 @@ app.get('/join/:slug', async (req, res) => {
       <div class="aud-video-wrap" id="aud-video-wrap">
         <video id="aud-preview" autoplay playsinline muted></video>
         <div class="aud-onair-frame" id="aud-onair-frame" hidden><span class="onair-tag">ON AIR</span></div>
-        <div class="aud-preview-note" id="aud-preview-note">Previewing locally · Full uncropped frame</div>
       </div>
       <div class="aud-alert" id="aud-stage-error" hidden></div>
       <div class="aud-controls">
@@ -1052,6 +1091,15 @@ app.get('/join/:slug', async (req, res) => {
       <button type="button" class="btn btn-primary btn-lg" id="aud-rejoin-btn">Return to Join Screen</button>
     </section>
   </main>
+  <div class="aud-modal-backdrop" id="aud-tos-modal" hidden>
+    <div class="aud-modal" role="dialog" aria-modal="true" aria-labelledby="aud-tos-title">
+      <div class="aud-modal-head">
+        <h2 id="aud-tos-title">Terms of Service</h2>
+        <button type="button" class="btn btn-secondary btn-sm" id="aud-tos-close">Close</button>
+      </div>
+      <div class="aud-modal-body" id="aud-tos-body"></div>
+    </div>
+  </div>
   <script type="module" src="/assets/js/audience.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
@@ -3177,6 +3225,55 @@ app.post('/api/admin/turn-config', async (req, res) => {
   }
 
   res.status(422).json({ error: 'Unsupported TURN mode.' });
+});
+
+app.get('/api/admin/terms-of-service', (req, res) => {
+  const actor = requireApiAuth(req, res, ['super_admin', 'host'], false);
+  if (!actor) return;
+  res.json(getTermsOfServicePayload());
+});
+
+app.post('/api/admin/terms-of-service', (req, res) => {
+  const actor = requireApiAuth(req, res, ['super_admin', 'host'], true);
+  if (!actor) return;
+  const action = String(req.body?.action || 'save').trim();
+  if (action === 'reset') {
+    dbRun("DELETE FROM system_settings WHERE setting_key = 'terms_of_service'");
+    logAudit(req, null, actor.id, actor.display_name, 'terms_updated', 'Reset Terms of Service to default');
+    res.json({
+      ok: true,
+      message: 'Terms of Service reset to default.',
+      ...getTermsOfServicePayload(),
+    });
+    return;
+  }
+
+  const raw = String(req.body?.terms_of_service ?? '').replace(/\r\n?/g, '\n');
+  const text = raw.trim();
+  if (!text) {
+    res.status(422).json({ error: 'Terms of Service text cannot be empty.' });
+    return;
+  }
+  if (text.length > 10000) {
+    res.status(422).json({ error: 'Terms of Service must be 10,000 characters or fewer.' });
+    return;
+  }
+
+  const now = utcNow();
+  dbRun(
+    `INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ('terms_of_service', ?, ?)
+     ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`,
+    text,
+    now
+  );
+  logAudit(req, null, actor.id, actor.display_name, 'terms_updated', 'Updated Terms of Service');
+  res.json({
+    ok: true,
+    message: 'Terms of Service updated.',
+    terms_of_service: text,
+    is_custom: true,
+    updated_at: now,
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

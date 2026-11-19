@@ -1251,4 +1251,50 @@ class AdminApiController
 
         jsonResponse(['error' => 'Unsupported TURN mode.'], 422);
     }
+
+    public static function getTermsOfService(): void
+    {
+        Auth::requireApiAuth(['super_admin', 'host'], false);
+        jsonResponse(Bootstrap::termsOfServicePayload());
+    }
+
+    public static function updateTermsOfService(): void
+    {
+        $actor = Auth::requireApiAuth(['super_admin', 'host'], true);
+        $in = jsonInput();
+        $action = trim((string)($in['action'] ?? 'save'));
+
+        if ($action === 'reset') {
+            Database::execute("DELETE FROM system_settings WHERE setting_key = 'terms_of_service'");
+            Audit::log(null, (int)$actor['id'], $actor['display_name'], 'terms_updated', 'Reset Terms of Service to default');
+            $payload = Bootstrap::termsOfServicePayload();
+            jsonResponse([
+                'ok' => true,
+                'message' => 'Terms of Service reset to default.',
+                ...$payload,
+            ]);
+        }
+
+        $raw = str_replace(["\r\n", "\r"], "\n", (string)($in['terms_of_service'] ?? ''));
+        $text = trim($raw);
+        if ($text === '') {
+            jsonResponse(['error' => 'Terms of Service text cannot be empty.'], 422);
+        }
+        if (mb_strlen($text) > 10000) {
+            jsonResponse(['error' => 'Terms of Service must be 10,000 characters or fewer.'], 422);
+        }
+
+        Database::upsert('system_settings', ['setting_key' => 'terms_of_service'], [
+            'setting_value' => $text,
+            'updated_at' => utcNow(),
+        ]);
+        Audit::log(null, (int)$actor['id'], $actor['display_name'], 'terms_updated', 'Updated Terms of Service');
+        jsonResponse([
+            'ok' => true,
+            'message' => 'Terms of Service updated.',
+            'terms_of_service' => $text,
+            'is_custom' => true,
+            'updated_at' => utcNow(),
+        ]);
+    }
 }

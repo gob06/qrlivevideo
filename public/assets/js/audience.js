@@ -29,11 +29,14 @@ const el = {
   previewVideo: document.getElementById('aud-preview'),
   videoWrap: document.getElementById('aud-video-wrap') || document.querySelector('.aud-video-wrap'),
   onairFrame: document.getElementById('aud-onair-frame'),
-  previewNote: document.getElementById('aud-preview-note'),
   micBtn: document.getElementById('aud-mic-btn'),
   micLabel: document.getElementById('aud-mic-label'),
   flipBtn: document.getElementById('aud-flip-btn'),
   leaveBtn: document.getElementById('aud-leave-btn'),
+  tosOpenBtn: document.getElementById('aud-tos-open'),
+  tosModal: document.getElementById('aud-tos-modal'),
+  tosCloseBtn: document.getElementById('aud-tos-close'),
+  tosBody: document.getElementById('aud-tos-body'),
 };
 
 let sessionToken = localStorage.getItem(storageKey) || '';
@@ -64,6 +67,24 @@ function detectInAppBrowser() {
 if (detectInAppBrowser()) {
   el.inappWarn.hidden = false;
 }
+
+if (el.tosBody) {
+  el.tosBody.textContent = cfg.termsOfService || '';
+}
+el.tosOpenBtn?.addEventListener('click', () => {
+  if (el.tosModal) el.tosModal.hidden = false;
+});
+el.tosCloseBtn?.addEventListener('click', () => {
+  if (el.tosModal) el.tosModal.hidden = true;
+});
+el.tosModal?.addEventListener('click', (ev) => {
+  if (ev.target === el.tosModal) el.tosModal.hidden = true;
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && el.tosModal && !el.tosModal.hidden) {
+    el.tosModal.hidden = true;
+  }
+});
 
 el.copyLinkBtn.addEventListener('click', async () => {
   try {
@@ -601,17 +622,13 @@ async function handleServerState(state) {
   applyAudioMuteState();
 
   if (state.status === 'onair') {
-    setBanner('onair', `ON AIR — Slot ${state.slot_no || 1}`);
+    setBanner('onair', state.blackout ? `ON AIR — Slot ${state.slot_no || 1} (Blackout)` : `ON AIR — Slot ${state.slot_no || 1}`);
     el.videoWrap.classList.add('is-onair');
     el.onairFrame.hidden = false;
-    el.previewNote.textContent = state.blackout
-      ? 'Wall is in blackout mode'
-      : 'You are live on the venue screen';
   } else if (state.status === 'waiting') {
     setBanner('waiting', state.preview_active ? 'Host is previewing your camera...' : 'Waiting in lobby');
     el.videoWrap.classList.remove('is-onair');
     el.onairFrame.hidden = true;
-    el.previewNote.textContent = 'Previewing locally · Full uncropped frame';
   } else if (state.status === 'removed' || state.status === 'banned' || state.status === 'event_closed' || state.status === 'left') {
     teardownMediaAndLoops();
     el.stepStage.hidden = true;
