@@ -189,8 +189,10 @@ function syncCaptureInfo() {
   // Match local preview container aspect ratio to real stream dimensions (uncropped, no stretch)
   if (el.videoWrap && vw > 0 && vh > 0) {
     el.videoWrap.style.aspectRatio = `${vw} / ${vh}`;
+    el.videoWrap.style.setProperty('--aud-ar', `${vw} / ${vh}`);
+    el.videoWrap.style.setProperty('--aud-ar-num', String(vw / vh));
   }
-  el.previewVideo.classList.toggle('mirrored', facingMode === 'user');
+  el.previewVideo.classList.remove('mirrored');
 
   // Show non-blocking landscape hint only when device/stream is portrait
   if (el.orientHint) {
@@ -434,6 +436,8 @@ const onViewportOrVideoChange = () => {
 window.addEventListener('orientationchange', onViewportOrVideoChange);
 window.addEventListener('resize', onViewportOrVideoChange);
 el.previewVideo.addEventListener('loadedmetadata', syncCaptureInfo);
+el.previewVideo.addEventListener('loadeddata', syncCaptureInfo);
+el.previewVideo.addEventListener('playing', syncCaptureInfo);
 el.previewVideo.addEventListener('resize', syncCaptureInfo);
 
 async function sendThumbnail() {
@@ -648,6 +652,11 @@ async function handleServerState(state) {
       el.endedTitle.textContent = 'Event Ended';
       el.endedDesc.textContent = 'Thank you for participating! This event has closed.';
       el.rejoinBtn.hidden = true;
+    } else {
+      setBanner('warn', 'Disconnected');
+      el.endedTitle.textContent = 'You Left the Wall';
+      el.endedDesc.textContent = 'Your camera and microphone are turned off.';
+      el.rejoinBtn.hidden = false;
     }
     return;
   }
@@ -675,6 +684,31 @@ function teardownMediaAndLoops() {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
   }
+  if (el.previewVideo) {
+    try { el.previewVideo.pause(); } catch {}
+    el.previewVideo.srcObject = null;
+    el.previewVideo.classList.remove('mirrored');
+    try { el.previewVideo.load(); } catch {}
+  }
+  if (el.videoWrap) {
+    el.videoWrap.style.aspectRatio = '';
+    el.videoWrap.style.removeProperty('--aud-ar');
+    el.videoWrap.style.removeProperty('--aud-ar-num');
+    el.videoWrap.classList.remove('is-onair');
+  }
+  if (el.onairFrame) el.onairFrame.hidden = true;
+  if (el.orientHint) el.orientHint.hidden = true;
+  if (el.stageError) {
+    el.stageError.hidden = true;
+    el.stageError.textContent = '';
+  }
+  currentCaptureSettings = {};
+  currentStatus = 'idle';
+  activeTargets = [];
+  userMuted = false;
+  adminMuted = false;
+  rejoining = false;
+  prevBytesMap.clear();
   if (wakeLock) {
     wakeLock.release().catch(() => {});
     wakeLock = null;
@@ -730,10 +764,9 @@ el.joinForm.addEventListener('submit', async (ev) => {
   el.startBtn.textContent = 'Starting camera...';
 
   try {
+    teardownMediaAndLoops();
     localStream = await startCamera(facingMode);
     el.previewVideo.srcObject = localStream;
-    syncCaptureInfo();
-    await el.previewVideo.play().catch(() => {});
     syncCaptureInfo();
     await acquireWakeLock();
 
@@ -763,9 +796,17 @@ el.joinForm.addEventListener('submit', async (ev) => {
     el.stepStage.hidden = false;
     setBanner('waiting', 'Waiting in lobby');
     applyAudioMuteState();
-    syncCaptureInfo();
 
-    el.previewVideo.addEventListener('loadeddata', () => { syncCaptureInfo(); sendThumbnail(); }, { once: true });
+    // Ensure playback & aspect sync run after the stage becomes visible (critical on mobile rejoin)
+    await el.previewVideo.play().catch(() => {});
+    syncCaptureInfo();
+    requestAnimationFrame(() => syncCaptureInfo());
+
+    if (el.previewVideo.readyState >= 2) {
+      sendThumbnail();
+    } else {
+      el.previewVideo.addEventListener('loadeddata', () => { syncCaptureInfo(); sendThumbnail(); }, { once: true });
+    }
     setTimeout(() => { syncCaptureInfo(); sendThumbnail(); }, 400);
     thumbTimer = setInterval(sendThumbnail, cfg.thumbIntervalMs || 3000);
     statsTimer = setInterval(reportAudienceStats, 4000);
@@ -785,10 +826,7 @@ el.joinForm.addEventListener('submit', async (ev) => {
       getIntervalMs: () => (activeTargets.length > 0 ? (cfg.pollFastMs || 700) : (cfg.pollIdleMs || 2000)),
     });
   } catch (err) {
-    if (localStream) {
-      localStream.getTracks().forEach((t) => t.stop());
-      localStream = null;
-    }
+    teardownMediaAndLoops();
     showJoinError(err.message || 'Failed to start.');
   } finally {
     el.startBtn.disabled = false;
@@ -817,9 +855,15 @@ async function leaveStream() {
 
 el.leaveBtn.addEventListener('click', leaveStream);
 el.rejoinBtn.addEventListener('click', () => {
+  teardownMediaAndLoops();
+  el.joinError.hidden = true;
+  el.stageError.hidden = true;
+  el.stepStage.hidden = true;
   el.stepEnded.hidden = true;
   el.stepJoin.hidden = false;
   el.statusBanner.hidden = true;
+  el.startBtn.disabled = false;
+  el.startBtn.textContent = 'Start Camera & Join';
 });
 
 window.addEventListener('pagehide', () => {

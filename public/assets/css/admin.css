@@ -714,11 +714,11 @@
   object-fit: contain;
   display: block;
   background: transparent;
+  transform: none !important;
 }
 .wall-tile.fit-fit .wall-tile-video { object-fit: contain; }
 .wall-tile.fit-fill .wall-tile-video { object-fit: cover; }
 .wall-tile.fit-stretch .wall-tile-video { object-fit: fill; }
-.wall-tile video.is-mirrored { transform: scaleX(-1); }
 
 .wall-tile-connecting {
   position: absolute;

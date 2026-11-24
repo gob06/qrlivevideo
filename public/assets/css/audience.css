@@ -154,18 +154,21 @@
 
 .aud-video-wrap {
   position: relative;
+  display: block;
+  flex-shrink: 0;
   width: 100%;
-  min-height: 220px;
-  max-height: 58dvh;
+  width: min(100%, calc(60vh * var(--aud-ar-num, 1.3333)));
+  width: min(100%, calc(60dvh * var(--aud-ar-num, 1.3333)));
+  aspect-ratio: var(--aud-ar, 4 / 3);
+  min-height: 180px;
+  max-height: 60vh;
+  max-height: 60dvh;
   margin: 0 auto;
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: #05070c;
   border: 2px solid var(--border-hairline);
   touch-action: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 .aud-video-wrap.is-onair {
   border-color: #ef4444;
@@ -173,13 +176,13 @@
 }
 
 .aud-video-wrap video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   display: block;
-}
-.aud-video-wrap video.mirrored {
-  transform: scaleX(-1);
+  transform: none !important;
 }
 
 .aud-onair-frame {

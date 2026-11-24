@@ -1,6 +1,6 @@
-import { renderBrandedQR, renderBrandedQRSvg, checkQrSafety, testScanCanvas, downloadBlob } from './qr-brand.js?v=20261119';
+import { renderBrandedQR, renderBrandedQRSvg, checkQrSafety, testScanCanvas, downloadBlob } from './qr-brand.js?v=20261124';
 import { sanitizeIceServers, formatAspectLabel, computeVideoFrameMetrics } from './webrtc-common.js?v=20261119';
-import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261119';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261124';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const mainEl = document.getElementById('adm-main');
@@ -912,9 +912,6 @@ async function renderEventStudioView(eventId) {
                   </label>
                 </div>
                 <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
-                  <input type="checkbox" id="ev-set-mirror"> Mirror front cameras on the wall
-                </label>
-                <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
                   <input type="checkbox" id="ev-set-lock"> Lock new joins (existing guests stay connected)
                 </label>
                 <details class="adv-details" id="ev-set-adv">
@@ -1137,7 +1134,15 @@ async function renderEventStudioView(eventId) {
     }
 
     await renderBrandedQR(qrCanvas, opts);
-    qrTestResultEl.textContent = '';
+    const scanRes = testScanCanvas(qrCanvas, lastStateData.joinUrl);
+    if (!scanRes.scannable) {
+      qrWarnEl.textContent = scanRes.reason;
+      qrWarnEl.hidden = false;
+      qrTestResultEl.className = 'status-text-red';
+      qrTestResultEl.textContent = `Not scannable — ${scanRes.reason}`;
+    } else {
+      qrTestResultEl.textContent = '';
+    }
   }
 
   document.getElementById('qr-test-scan-btn').addEventListener('click', () => {
@@ -1323,7 +1328,6 @@ async function renderEventStudioView(eventId) {
     document.getElementById('ev-set-tilebg').value = initBg;
     document.getElementById('ev-set-tilebg-color').value = initBgCol;
     document.getElementById('ev-set-tilebg-color').hidden = initBg !== 'solid';
-    document.getElementById('ev-set-mirror').checked = Number(initial.event.mirror_front_wall || 0) === 1;
 
     document.getElementById('ev-set-tilebg').addEventListener('change', (e) => {
       document.getElementById('ev-set-tilebg-color').hidden = e.target.value !== 'solid';
@@ -1345,7 +1349,7 @@ async function renderEventStudioView(eventId) {
             wall_fit_mode: chosenFit,
             wall_tile_bg: document.getElementById('ev-set-tilebg').value,
             wall_tile_bg_color: document.getElementById('ev-set-tilebg-color').value,
-            mirror_front_wall: document.getElementById('ev-set-mirror').checked,
+            mirror_front_wall: false,
           },
         });
         pokeWallIframe(wallIframe);
@@ -2036,7 +2040,7 @@ async function renderMonitorView(eventId) {
               fitMode: pObj?.slot_fit_mode || data.event.wall_fit_mode || 'fit',
               tileBg: data.event.wall_tile_bg || 'blur',
               tileBgColor: data.event.wall_tile_bg_color || '#090d16',
-              mirrored: Boolean(Number(data.event.mirror_front_wall || 0) === 1 && pObj?.facing_mode === 'user'),
+              mirrored: false,
               captureInfo: pObj?.capture_settings || null,
             });
             await startPrivatePreview(eventId, pid, {
@@ -2753,10 +2757,6 @@ async function renderFrameCheckView() {
             <input type="color" id="fc-tilebg-color" value="#090d16" style="width:44px;height:36px;" hidden>
           </div>
 
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
-            <input type="checkbox" id="fc-mirror"> Mirror front cameras on the wall
-          </label>
-
           <details class="adv-details">
             <summary>Advanced display options</summary>
             <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
@@ -2791,7 +2791,6 @@ async function renderFrameCheckView() {
   const stretchChk = document.getElementById('fc-stretch');
   const tileBgSel = document.getElementById('fc-tilebg');
   const tileBgColEl = document.getElementById('fc-tilebg-color');
-  const mirrorChk = document.getElementById('fc-mirror');
   const camStartBtn = document.getElementById('fc-cam-start-btn');
   const camStopBtn = document.getElementById('fc-cam-stop-btn');
   const camDevSel = document.getElementById('fc-cam-device');
@@ -2877,15 +2876,13 @@ async function renderFrameCheckView() {
     const tileBgColor = tileBgColEl.value;
     tileBgColEl.hidden = tileBg !== 'solid';
     const cap = localStream ? localCaptureInfo : (remoteParticipant?.capture_settings || null);
-    const fm = localStream ? (localCaptureInfo?.facingMode || 'unknown') : (remoteParticipant?.facing_mode || 'unknown');
-    const mirrored = mirrorChk.checked && fm === 'user';
 
     stageTiles.forEach((t, idx) => {
       updateWallTileAppearance(t, {
         fitMode,
         tileBg,
         tileBgColor,
-        mirrored: idx === 0 ? mirrored : false,
+        mirrored: false,
         frameCheck: overlayChk.checked,
         captureInfo: idx === 0 ? cap : null,
       });
@@ -2911,7 +2908,6 @@ async function renderFrameCheckView() {
       stretchChk.checked = fm === 'stretch';
       tileBgSel.value = ev.wall_tile_bg || 'blur';
       tileBgColEl.value = ev.wall_tile_bg_color || '#090d16';
-      mirrorChk.checked = Number(ev.mirror_front_wall || 0) === 1;
       remoteParticipants = d.participants || [];
       partSel.innerHTML = `<option value="">Select connected guest (${remoteParticipants.length})...</option>` +
         remoteParticipants.map((p) => `<option value="${p.id}">${esc(p.display_name)} (${esc(p.status)})</option>`).join('');
@@ -3053,7 +3049,7 @@ async function renderFrameCheckView() {
   });
 
   layoutSel.addEventListener('change', rebuildTiles);
-  [fitSel, stretchChk, tileBgSel, tileBgColEl, mirrorChk, overlayChk].forEach((el) => {
+  [fitSel, stretchChk, tileBgSel, tileBgColEl, overlayChk].forEach((el) => {
     el.addEventListener('input', syncTileStyles);
     el.addEventListener('change', syncTileStyles);
   });
@@ -3068,7 +3064,7 @@ async function renderFrameCheckView() {
             wall_fit_mode: activeFitMode(),
             wall_tile_bg: tileBgSel.value,
             wall_tile_bg_color: tileBgColEl.value,
-            mirror_front_wall: mirrorChk.checked,
+            mirror_front_wall: false,
           },
         });
         toast('Display settings saved to event');

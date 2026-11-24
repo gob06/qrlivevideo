@@ -198,7 +198,7 @@ class WallApiController
             'wall_fit_mode' => $event['wall_fit_mode'] ?? 'fit',
             'wall_tile_bg' => $event['wall_tile_bg'] ?? 'blur',
             'wall_tile_bg_color' => $event['wall_tile_bg_color'] ?? '#090d16',
-            'mirror_front_wall' => ((int)($event['mirror_front_wall'] ?? 0)) === 1,
+            'mirror_front_wall' => false,
             'qr' => [
                 'joinUrl' => Bootstrap::baseUrl() . '/join/' . rawurlencode($event['slug']),
                 'logoUrl' => $event['logo_filename'] ? '/uploads/logos/' . rawurlencode($event['logo_filename']) : null,

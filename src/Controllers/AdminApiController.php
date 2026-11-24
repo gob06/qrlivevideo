@@ -202,9 +202,7 @@ class AdminApiController
         $wallTileBgColor = isset($in['wall_tile_bg_color'])
             ? Validator::hexColor((string)$in['wall_tile_bg_color'], '#090d16', false)
             : ($event['wall_tile_bg_color'] ?? '#090d16');
-        $mirrorFrontWall = isset($in['mirror_front_wall'])
-            ? ((int)!empty($in['mirror_front_wall']))
-            : ((int)($event['mirror_front_wall'] ?? 0));
+        $mirrorFrontWall = 0;
 
         Database::execute(
             'UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,

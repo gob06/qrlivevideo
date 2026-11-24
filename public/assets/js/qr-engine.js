@@ -233,13 +233,7 @@ function buildFunctionGrid(version) {
   placeFinder(0, n - 7);
   placeFinder(n - 7, 0);
 
-  // Timing patterns
-  for (let i = 8; i < n - 8; i++) {
-    setFunc(6, i, i % 2 === 0);
-    setFunc(i, 6, i % 2 === 0);
-  }
-
-  // Alignment patterns
+  // Alignment patterns (must be placed before timing patterns so row/col 6 intersections are preserved)
   const pos = ALIGN_POS[version] || [];
   for (let i = 0; i < pos.length; i++) {
     for (let j = 0; j < pos.length; j++) {
@@ -253,6 +247,12 @@ function buildFunctionGrid(version) {
         }
       }
     }
+  }
+
+  // Timing patterns
+  for (let i = 8; i < n - 8; i++) {
+    if (!isFunc[6][i]) setFunc(6, i, i % 2 === 0);
+    if (!isFunc[i][6]) setFunc(i, 6, i % 2 === 0);
   }
 
   // Reserve format info
@@ -800,13 +800,6 @@ export function decodeQRFromImageData(imageData) {
   }
 
   // Read format bits (two redundant copies)
-  let fmt1 = 0;
-  for (let i = 0; i < 6; i++) fmt1 = (fmt1 << 1) | matrix[8][i];
-  fmt1 = (fmt1 << 1) | matrix[8][7];
-  fmt1 = (fmt1 << 1) | matrix[8][8];
-  fmt1 = (fmt1 << 1) | matrix[7][8];
-  for (let i = 5; i >= 0; i--) fmt1 = (fmt1 << 1) | matrix[i][8];
-  // Note: standard bit order puts bit 14 at (8,0) -> read reversed
   let fmtA = 0;
   for (let i = 0; i < 15; i++) {
     let bit = 0;

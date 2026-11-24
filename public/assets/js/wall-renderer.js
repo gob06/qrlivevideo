@@ -146,12 +146,11 @@ export function updateWallTileAppearance(tile, opts = {}) {
   const fitMode = normalizeFitMode(opts.fitMode, 'fit');
   const tileBg = normalizeTileBg(opts.tileBg);
   const tileBgColor = String(opts.tileBgColor || '#090d16');
-  const mirrored = Boolean(opts.mirrored);
 
   tile.fitMode = fitMode;
   tile.tileBg = tileBg;
   tile.tileBgColor = tileBgColor;
-  tile.mirrored = mirrored;
+  tile.mirrored = false;
   if (opts.frameCheck !== undefined) {
     tile.frameCheck = Boolean(opts.frameCheck);
   }
@@ -163,8 +162,10 @@ export function updateWallTileAppearance(tile, opts = {}) {
   tile.root.classList.add(`fit-${fitMode}`, `bg-${tileBg}`);
   tile.root.style.backgroundColor = tileBg === 'solid' ? tileBgColor : (tileBg === 'transparent' ? 'transparent' : '#090d16');
 
-  tile.video.classList.toggle('is-mirrored', mirrored);
-  tile.bgVideo.classList.toggle('is-mirrored', mirrored);
+  tile.video.classList.remove('is-mirrored');
+  tile.bgVideo.classList.remove('is-mirrored');
+  tile.video.style.transform = 'none';
+  tile.bgVideo.style.transform = 'none';
 
   const showBlurBg = tileBg === 'blur' && fitMode === 'fit';
   tile.bgVideo.hidden = !showBlurBg;

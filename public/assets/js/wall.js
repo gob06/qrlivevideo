@@ -1,6 +1,6 @@
-import { renderBrandedQR } from './qr-brand.js?v=20261119';
+import { renderBrandedQR } from './qr-brand.js?v=20261124';
 import { collectPeerStats, sanitizeIceServers, startAdaptiveTransport } from './webrtc-common.js?v=20261119';
-import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261119';
+import { createWallTile, updateWallTileAppearance, attachStreamToWallTile } from './wall-renderer.js?v=20261124';
 
 const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const urlParams = new URLSearchParams(window.location.search);
@@ -94,13 +94,12 @@ function createOrUpdateTile(slot, idx, showLabels, state) {
   const fitMode = slot.fit_mode || state.wall_fit_mode || 'fit';
   const tileBg = state.wall_tile_bg || 'blur';
   const tileBgColor = state.wall_tile_bg_color || '#090d16';
-  const mirrored = Boolean(state.mirror_front_wall) && slot.facing_mode === 'user';
 
   updateWallTileAppearance(tile, {
     fitMode,
     tileBg,
     tileBgColor,
-    mirrored,
+    mirrored: false,
     frameCheck: frameCheckEnabled,
     captureInfo: slot.capture_settings || null,
   });

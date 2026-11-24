@@ -1846,7 +1846,7 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
     wall_fit_mode: event.wall_fit_mode || 'fit',
     wall_tile_bg: event.wall_tile_bg || 'blur',
     wall_tile_bg_color: event.wall_tile_bg_color || '#090d16',
-    mirror_front_wall: Number(event.mirror_front_wall || 0) === 1,
+    mirror_front_wall: false,
     qr: {
       joinUrl: `${baseUrl(req)}/join/${encodeURIComponent(String(event.slug))}`,
       logoUrl: event.logo_filename ? `/uploads/logos/${encodeURIComponent(String(event.logo_filename))}` : null,
@@ -2179,7 +2179,7 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
   const wallFitMode = ['fit', 'fill', 'stretch'].includes(b.wall_fit_mode) ? b.wall_fit_mode : String(event.wall_fit_mode || 'fit');
   const wallTileBg = ['blur', 'solid', 'transparent'].includes(b.wall_tile_bg) ? b.wall_tile_bg : String(event.wall_tile_bg || 'blur');
   const wallTileBgColor = b.wall_tile_bg_color !== undefined ? hexColor(b.wall_tile_bg_color, '#090d16', false) : String(event.wall_tile_bg_color || '#090d16');
-  const mirrorFrontWall = b.mirror_front_wall !== undefined ? (b.mirror_front_wall ? 1 : 0) : Number(event.mirror_front_wall || 0);
+  const mirrorFrontWall = 0;
 
   dbRun(
     `UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,
