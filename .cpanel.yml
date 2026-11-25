@@ -3,7 +3,7 @@ deployment:
   tasks:
     - export DEPLOYPATH=${HOME}/public_html/qrlive/
     - /bin/mkdir -p "${DEPLOYPATH}" "${DEPLOYPATH}public" "${DEPLOYPATH}storage/logs" "${DEPLOYPATH}public/uploads/logos"
-    - /bin/cp -rf config src views schema.mariadb.sql cron_cleanup.php .env.example "${DEPLOYPATH}"
+    - /bin/cp -rf config src views migrations schema.mariadb.sql cron_cleanup.php .env.example "${DEPLOYPATH}"
     - /bin/sh -c 'if [ -f "${DEPLOYPATH}.htaccess" ] && grep -q "BEGIN cPanel-generated handler" "${DEPLOYPATH}.htaccess"; then awk "/# php -- BEGIN cPanel-generated handler/,/# php -- END cPanel-generated handler/" "${DEPLOYPATH}.htaccess" > "${DEPLOYPATH}.htaccess.cpanel"; /bin/cat .htaccess "${DEPLOYPATH}.htaccess.cpanel" > "${DEPLOYPATH}.htaccess.new"; /bin/mv -f "${DEPLOYPATH}.htaccess.new" "${DEPLOYPATH}.htaccess"; /bin/rm -f "${DEPLOYPATH}.htaccess.cpanel"; else /bin/cp -f .htaccess "${DEPLOYPATH}.htaccess"; fi'
     - if [ -f .env ] && [ ! -f "${DEPLOYPATH}.env" ]; then /bin/cp -f .env "${DEPLOYPATH}.env"; fi
     - /bin/cp -rf public/index.php public/.htaccess public/assets "${DEPLOYPATH}public/"

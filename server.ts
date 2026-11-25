@@ -406,6 +406,30 @@ if (!evCols.some((c) => c.name === 'wall_tile_bg_color')) {
 if (!evCols.some((c) => c.name === 'mirror_front_wall')) {
   db.exec('ALTER TABLE events ADD COLUMN mirror_front_wall INTEGER NOT NULL DEFAULT 0');
 }
+if (!evCols.some((c) => c.name === 'wall_qr_side_enabled')) {
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_side_enabled INTEGER NOT NULL DEFAULT 1');
+}
+if (!evCols.some((c) => c.name === 'wall_qr_hidden')) {
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_hidden INTEGER NOT NULL DEFAULT 0');
+}
+if (!evCols.some((c) => c.name === 'wall_qr_side')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_qr_side TEXT NOT NULL DEFAULT 'right'");
+}
+if (!evCols.some((c) => c.name === 'wall_qr_size')) {
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_size INTEGER NOT NULL DEFAULT 480');
+}
+if (!evCols.some((c) => c.name === 'wall_qr_valign')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_qr_valign TEXT NOT NULL DEFAULT 'center'");
+}
+if (!evCols.some((c) => c.name === 'wall_qr_bg_color')) {
+  db.exec("ALTER TABLE events ADD COLUMN wall_qr_bg_color TEXT NOT NULL DEFAULT '#090d16'");
+}
+if (!evCols.some((c) => c.name === 'wall_qr_bg_opacity')) {
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_bg_opacity INTEGER NOT NULL DEFAULT 100');
+}
+if (!evCols.some((c) => c.name === 'wall_qr_show_title')) {
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_show_title INTEGER NOT NULL DEFAULT 1');
+}
 const partCols = db.prepare('PRAGMA table_info(participants)').all() as Array<{ name: string }>;
 if (!partCols.some((c) => c.name === 'facing_mode')) {
   db.exec("ALTER TABLE participants ADD COLUMN facing_mode TEXT NOT NULL DEFAULT 'unknown'");
@@ -1045,13 +1069,9 @@ app.get('/join/:slug', async (req, res) => {
 </head>
 <body class="aud-body">
   <script id="app-config" type="application/json">${safeJsonScript(config)}</script>
-  <main class="aud-shell">
-    <header class="aud-header">
+  <main class="aud-shell" id="aud-shell">
+    <header class="aud-header" id="aud-header">
       <div class="aud-event-title" id="aud-event-title">${esc(config.eventTitle)}</div>
-      <div class="aud-status-bar status-waiting" id="aud-status-banner" hidden>
-        <span class="status-dot" id="aud-status-dot"></span>
-        <span id="aud-status-text">Waiting in lobby</span>
-      </div>
     </header>
     <section class="aud-inapp-warning" id="aud-inapp-warning" hidden>
       <p><strong>In-app browser detected.</strong> Camera access often fails inside social apps. Open this page in <strong>Safari</strong> or <strong>Chrome</strong>.</p>
@@ -1071,26 +1091,43 @@ app.get('/join/:slug', async (req, res) => {
       <p class="aud-tos-note">By Joining to the live screen, you agree to our <button type="button" class="aud-tos-link" id="aud-tos-open">Terms of Service</button>.</p>
     </section>
     <section class="aud-stage" id="aud-step-stage" hidden>
-      <div class="aud-orient-hint" id="aud-orient-hint" hidden>
-        Landscape gives the best result on the big screen
+      <div class="aud-stage-topbar status-waiting" id="aud-stage-topbar">
+        <div class="aud-stage-status">
+          <span class="status-dot" id="aud-status-dot"></span>
+          <span id="aud-status-text">Waiting in lobby</span>
+        </div>
+        <div class="aud-guest-name" id="aud-guest-name"></div>
       </div>
       <div class="aud-video-wrap" id="aud-video-wrap">
-        <video id="aud-preview" autoplay playsinline muted></video>
-        <div class="aud-onair-frame" id="aud-onair-frame" hidden><span class="onair-tag">ON AIR</span></div>
+        <video id="aud-preview-bg" class="aud-preview-bg" autoplay playsinline muted aria-hidden="true"></video>
+        <video id="aud-preview" class="aud-preview-main" autoplay playsinline muted></video>
       </div>
-      <div class="aud-alert" id="aud-stage-error" hidden></div>
-      <div class="aud-controls">
-        <button type="button" class="btn btn-control" id="aud-mic-btn" aria-pressed="false"><span class="ctrl-label" id="aud-mic-label">Mic On</span></button>
-        <button type="button" class="btn btn-control" id="aud-flip-btn"><span class="ctrl-label">Flip Camera</span></button>
-        <button type="button" class="btn btn-danger" id="aud-leave-btn"><span class="ctrl-label">Leave</span></button>
+      <div class="aud-controls-bar" id="aud-controls-bar">
+        <div class="aud-alert" id="aud-stage-error" hidden></div>
+        <div class="aud-controls">
+          <button type="button" class="btn btn-control" id="aud-mic-btn" aria-pressed="false"><span class="ctrl-label" id="aud-mic-label">Mic On</span></button>
+          <button type="button" class="btn btn-control" id="aud-flip-btn"><span class="ctrl-label">Flip Camera</span></button>
+          <button type="button" class="btn btn-danger" id="aud-leave-btn"><span class="ctrl-label">Leave</span></button>
+        </div>
       </div>
     </section>
     <section class="aud-card aud-ended" id="aud-step-ended" hidden>
+      <div class="aud-status-bar status-warn" id="aud-ended-banner">
+        <span class="status-dot"></span>
+        <span id="aud-ended-banner-text">Disconnected</span>
+      </div>
       <h2 id="aud-ended-title">Session Ended</h2>
       <p id="aud-ended-desc">You have left the live wall.</p>
       <button type="button" class="btn btn-primary btn-lg" id="aud-rejoin-btn">Return to Join Screen</button>
     </section>
   </main>
+  <div class="aud-rotate-overlay" id="aud-rotate-overlay" hidden>
+    <div class="aud-rotate-card">
+      <div class="aud-rotate-icon" aria-hidden="true">📱</div>
+      <div class="aud-rotate-title">Please hold your phone upright</div>
+      <div class="aud-rotate-sub">Portrait mode is required for the live camera stage.</div>
+    </div>
+  </div>
   <div class="aud-modal-backdrop" id="aud-tos-modal" hidden>
     <div class="aud-modal" role="dialog" aria-modal="true" aria-labelledby="aud-tos-title">
       <div class="aud-modal-head">
@@ -1117,8 +1154,9 @@ app.get('/wall/:slug', async (req, res) => {
   const bg = ['transparent', 'black', 'green'].includes(bgParam) ? bgParam : 'transparent';
   const audioParam = String(req.query.audio || '').toLowerCase();
   const audioOverride = ['on', 'off'].includes(audioParam) ? audioParam : null;
-  const qrParam = String(req.query.qr || 'auto').toLowerCase();
-  const qrMode = ['on', 'off', 'corner', 'auto'].includes(qrParam) ? qrParam : 'auto';
+  let qrParam = String(req.query.qr || 'side').toLowerCase();
+  if (qrParam === 'auto' || qrParam === 'on') qrParam = 'side';
+  const qrMode = ['side', 'corner', 'off'].includes(qrParam) ? qrParam : 'side';
   const isMonitor = String(req.query.monitor || '0') === '1';
   const viewerId = isMonitor
     ? String(req.query.mid || `mon_${crypto.randomBytes(4).toString('hex')}`).replace(/[^a-zA-Z0-9_-]/g, '')
@@ -1151,21 +1189,41 @@ app.get('/wall/:slug', async (req, res) => {
 </head>
 <body class="wall-body wall-bg-${esc(bg)}">
   <script id="app-config" type="application/json">${safeJsonScript(config)}</script>
-  <main class="wall-stage" id="wall-stage">
-    <section class="wall-qr-idle" id="wall-qr-idle">
-      <div class="wall-qr-card" id="wall-qr-card">
-        <div class="wall-qr-eyebrow" id="wall-event-title">${esc(config.eventTitle)}</div>
-        <div class="wall-qr-canvas-wrap"><canvas id="wall-qr-canvas" width="1360" height="1360"></canvas></div>
-        <div class="wall-qr-cta">Scan to join the live wall</div>
+  <div class="wall-viewport" id="wall-viewport">
+    <main class="wall-stage" id="wall-stage">
+      <div class="wall-live-layout" id="wall-live-layout" data-qr-side="right">
+        <section class="wall-video-area" id="wall-video-area">
+          <section class="wall-grid layout-single" id="wall-grid"></section>
+        </section>
+        <aside class="wall-qr-panel" id="wall-qr-panel" aria-label="Join QR Panel">
+          <div class="wall-qr-panel-inner valign-center" id="wall-qr-panel-inner">
+            <div class="wall-qr-panel-title" id="wall-panel-title">${esc(config.eventTitle)}</div>
+            <div class="wall-qr-panel-box" id="wall-panel-box">
+              <canvas id="wall-qr-side-canvas" width="480" height="480"></canvas>
+              <div class="wall-qr-status-msg" id="wall-panel-status" hidden></div>
+            </div>
+            <div class="wall-qr-panel-cta" id="wall-panel-cta">Scan to join the live</div>
+          </div>
+        </aside>
       </div>
-    </section>
-    <section class="wall-grid layout-single" id="wall-grid" hidden></section>
-    <aside class="wall-qr-corner" id="wall-qr-corner" hidden>
-      <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
-      <div class="wall-qr-corner-label">Scan to join</div>
-    </aside>
-    <div class="wall-blackout" id="wall-blackout" hidden></div>
-  </main>
+      <section class="wall-qr-idle" id="wall-qr-idle">
+        <div class="wall-qr-card" id="wall-qr-card">
+          <div class="wall-qr-eyebrow" id="wall-event-title">${esc(config.eventTitle)}</div>
+          <div class="wall-qr-canvas-wrap" id="wall-idle-canvas-wrap">
+            <canvas id="wall-qr-canvas" width="1360" height="1360"></canvas>
+            <div class="wall-qr-status-msg wall-qr-status-idle" id="wall-idle-status" hidden></div>
+          </div>
+          <div class="wall-qr-cta">Scan to join the live</div>
+        </div>
+      </section>
+      <aside class="wall-qr-corner" id="wall-qr-corner" hidden>
+        <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
+        <div class="wall-qr-status-msg wall-qr-status-corner" id="wall-corner-status" hidden></div>
+        <div class="wall-qr-corner-label">Scan to join the live</div>
+      </aside>
+      <div class="wall-blackout" id="wall-blackout" hidden></div>
+    </main>
+  </div>
   <script type="module" src="/assets/js/wall.js?v=${ASSET_VER}"></script>
 </body>
 </html>`);
@@ -1819,11 +1877,17 @@ function verifyWall(slug: string, key: string) {
 function buildWallState(req: Request, event: Record<string, unknown>, viewerId: string) {
   const eid = Number(event.id);
   const slots = dbAll<Record<string, unknown>>(
-    `SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.facing_mode, p.capture_settings
+    `SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.muted_by_admin, p.facing_mode, p.capture_settings
      FROM wall_slots ws JOIN participants p ON p.id = ws.participant_id
      WHERE ws.event_id = ? AND p.status = 'onair' ORDER BY ws.slot_no ASC`,
     eid
   );
+
+  const activeRow = dbGet<{ cnt: number }>(
+    "SELECT COUNT(*) AS cnt FROM participants WHERE event_id = ? AND status IN ('waiting', 'onair')",
+    eid
+  );
+  const isFull = Number(activeRow?.cnt || 0) >= Number(event.max_participants || 100);
 
   const signals = dbAll<{ id: number; participant_id: number; type: string; payload: string }>(
     "SELECT id, participant_id, type, payload FROM signals WHERE event_id = ? AND target_id = ? AND direction = 'to_viewer' AND consumed = 0 ORDER BY id ASC",
@@ -1835,18 +1899,35 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
     dbRun(`DELETE FROM signals WHERE id IN (${ph})`, ...signals.map((s) => s.id));
   }
 
+  const sideQrSize = Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 480)));
+  const sideQrSide = event.wall_qr_side === 'left' ? 'left' : 'right';
+  const sideQrValign = event.wall_qr_valign === 'top' ? 'top' : 'center';
+  const sideQrOpacity = Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 100)));
+
   return {
     event_status: event.status,
+    join_locked: event.join_locked === 1,
+    is_full: isFull,
     title: event.title,
     blackout: event.blackout === 1,
     layout: event.layout,
     max_wall_feeds: event.max_wall_feeds,
-    show_labels: event.show_labels === 1,
+    show_labels: false,
     audio_enabled: event.audio_enabled === 1,
     wall_fit_mode: event.wall_fit_mode || 'fit',
     wall_tile_bg: event.wall_tile_bg || 'blur',
     wall_tile_bg_color: event.wall_tile_bg_color || '#090d16',
     mirror_front_wall: false,
+    side_qr: {
+      enabled: Number(event.wall_qr_side_enabled ?? 1) === 1,
+      hidden: Number(event.wall_qr_hidden ?? 0) === 1,
+      side: sideQrSide,
+      size: sideQrSize,
+      valign: sideQrValign,
+      bg_color: String(event.wall_qr_bg_color || '#090d16'),
+      bg_opacity: sideQrOpacity,
+      show_title: Number(event.wall_qr_show_title ?? 1) === 1,
+    },
     qr: {
       joinUrl: `${baseUrl(req)}/join/${encodeURIComponent(String(event.slug))}`,
       logoUrl: event.logo_filename ? `/uploads/logos/${encodeURIComponent(String(event.logo_filename))}` : null,
@@ -1866,8 +1947,6 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
       return {
         slot_no: Number(s.slot_no),
         participant_id: Number(s.participant_id),
-        display_name: s.name_hidden === 1 ? 'Guest' : s.display_name,
-        message: s.name_hidden === 1 ? '' : s.message,
         muted: s.muted_by_admin === 1,
         fit_mode: s.fit_mode || null,
         facing_mode: s.facing_mode || 'unknown',
@@ -2181,10 +2260,25 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
   const wallTileBgColor = b.wall_tile_bg_color !== undefined ? hexColor(b.wall_tile_bg_color, '#090d16', false) : String(event.wall_tile_bg_color || '#090d16');
   const mirrorFrontWall = 0;
 
+  const wallQrSideEnabled = b.wall_qr_side_enabled !== undefined ? (b.wall_qr_side_enabled ? 1 : 0) : Number(event.wall_qr_side_enabled ?? 1);
+  const wallQrHidden = b.wall_qr_hidden !== undefined ? (b.wall_qr_hidden ? 1 : 0) : Number(event.wall_qr_hidden ?? 0);
+  const wallQrSide = ['right', 'left'].includes(b.wall_qr_side) ? b.wall_qr_side : String(event.wall_qr_side || 'right');
+  const wallQrSize = b.wall_qr_size !== undefined
+    ? Math.max(320, Math.min(560, Math.round(Number(b.wall_qr_size || 480))))
+    : Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 480)));
+  const wallQrValign = ['center', 'top'].includes(b.wall_qr_valign) ? b.wall_qr_valign : String(event.wall_qr_valign || 'center');
+  const wallQrBgColor = b.wall_qr_bg_color !== undefined ? hexColor(b.wall_qr_bg_color, '#090d16', false) : String(event.wall_qr_bg_color || '#090d16');
+  const wallQrBgOpacity = b.wall_qr_bg_opacity !== undefined
+    ? Math.max(0, Math.min(100, Math.round(Number(b.wall_qr_bg_opacity))))
+    : Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 100)));
+  const wallQrShowTitle = b.wall_qr_show_title !== undefined ? (b.wall_qr_show_title ? 1 : 0) : Number(event.wall_qr_show_title ?? 1);
+
   dbRun(
     `UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,
      layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?, join_logo_image_id = ?,
      wall_fit_mode = ?, wall_tile_bg = ?, wall_tile_bg_color = ?, mirror_front_wall = ?,
+     wall_qr_side_enabled = ?, wall_qr_hidden = ?, wall_qr_side = ?, wall_qr_size = ?,
+     wall_qr_valign = ?, wall_qr_bg_color = ?, wall_qr_bg_opacity = ?, wall_qr_show_title = ?,
      qr_logo_shape = ?, qr_logo_fit = ?, qr_logo_scale = ?, qr_logo_padding = ?, qr_logo_bg = ?, qr_fg = ?, qr_bg = ?,
      state_version = state_version + 1, last_action_by = ?, last_action_summary = ?, last_action_at = ?
      WHERE id = ?`,
@@ -2204,6 +2298,14 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
     wallTileBg,
     wallTileBgColor,
     mirrorFrontWall,
+    wallQrSideEnabled,
+    wallQrHidden,
+    wallQrSide,
+    wallQrSize,
+    wallQrValign,
+    wallQrBgColor,
+    wallQrBgOpacity,
+    wallQrShowTitle,
     qrShape,
     qrFit,
     qrScale,

@@ -10,13 +10,17 @@ const cfg = JSON.parse(document.getElementById('app-config').textContent);
 const storageKey = `qrlw_aud_${cfg.eventSlug}`;
 
 const el = {
+  header: document.getElementById('aud-header'),
   inappWarn: document.getElementById('aud-inapp-warning'),
   copyLinkBtn: document.getElementById('aud-copy-link'),
-  statusBanner: document.getElementById('aud-status-banner'),
+  stageTopbar: document.getElementById('aud-stage-topbar'),
   statusText: document.getElementById('aud-status-text'),
+  guestName: document.getElementById('aud-guest-name'),
   stepJoin: document.getElementById('aud-step-join'),
   stepStage: document.getElementById('aud-step-stage'),
   stepEnded: document.getElementById('aud-step-ended'),
+  endedBanner: document.getElementById('aud-ended-banner'),
+  endedBannerText: document.getElementById('aud-ended-banner-text'),
   endedTitle: document.getElementById('aud-ended-title'),
   endedDesc: document.getElementById('aud-ended-desc'),
   rejoinBtn: document.getElementById('aud-rejoin-btn'),
@@ -25,14 +29,15 @@ const el = {
   stageError: document.getElementById('aud-stage-error'),
   consentInput: document.getElementById('aud-consent'),
   startBtn: document.getElementById('aud-start-btn'),
-  orientHint: document.getElementById('aud-orient-hint'),
+  videoWrap: document.getElementById('aud-video-wrap'),
+  previewBg: document.getElementById('aud-preview-bg'),
   previewVideo: document.getElementById('aud-preview'),
-  videoWrap: document.getElementById('aud-video-wrap') || document.querySelector('.aud-video-wrap'),
-  onairFrame: document.getElementById('aud-onair-frame'),
+  controlsBar: document.getElementById('aud-controls-bar'),
   micBtn: document.getElementById('aud-mic-btn'),
   micLabel: document.getElementById('aud-mic-label'),
   flipBtn: document.getElementById('aud-flip-btn'),
   leaveBtn: document.getElementById('aud-leave-btn'),
+  rotateOverlay: document.getElementById('aud-rotate-overlay'),
   tosOpenBtn: document.getElementById('aud-tos-open'),
   tosModal: document.getElementById('aud-tos-modal'),
   tosCloseBtn: document.getElementById('aud-tos-close'),
@@ -46,6 +51,7 @@ let facingMode = 'user';
 let currentCaptureSettings = {};
 let userMuted = false;
 let adminMuted = false;
+let orientationPaused = false;
 let currentStatus = 'idle';
 let activeTargets = [];
 let stopTransport = null;
@@ -64,7 +70,13 @@ function detectInAppBrowser() {
   return /(FBAN|FBAV|Instagram|Line\/|TikTok|BytedanceWebview|MicroMessenger|Snapchat)/i.test(ua);
 }
 
-if (detectInAppBrowser()) {
+function isMobileTouchDevice() {
+  const ua = navigator.userAgent || '';
+  return (navigator.maxTouchPoints > 0 || 'ontouchstart' in window)
+    && /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+}
+
+if (detectInAppBrowser() && el.inappWarn) {
   el.inappWarn.hidden = false;
 }
 
@@ -86,7 +98,7 @@ document.addEventListener('keydown', (ev) => {
   }
 });
 
-el.copyLinkBtn.addEventListener('click', async () => {
+el.copyLinkBtn?.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(window.location.href);
     el.copyLinkBtn.textContent = 'Link Copied!';
@@ -100,10 +112,99 @@ function showJoinError(msg) {
   el.joinError.hidden = false;
 }
 
-function setBanner(mode, text) {
-  el.statusBanner.hidden = false;
-  el.statusBanner.className = `aud-status-bar status-${mode}`;
-  el.statusText.textContent = text;
+function setStageMode(active) {
+  document.body.classList.toggle('is-live-stage', active);
+  if (el.header) el.header.hidden = active;
+}
+
+function setTopbar(mode, text) {
+  if (el.stageTopbar) {
+    el.stageTopbar.className = `aud-stage-topbar status-${mode}`;
+  }
+  if (el.statusText) {
+    el.statusText.textContent = text;
+  }
+  if (el.controlsBar) {
+    el.controlsBar.classList.toggle('is-onair', mode === 'onair');
+  }
+}
+
+function setEndedBanner(mode, text) {
+  if (el.endedBanner) {
+    el.endedBanner.className = `aud-status-bar status-${mode}`;
+  }
+  if (el.endedBannerText) {
+    el.endedBannerText.textContent = text;
+  }
+}
+
+function setGuestDisplayName(name) {
+  if (el.guestName && typeof name === 'string') {
+    el.guestName.textContent = name;
+  }
+}
+
+function attachPreviewStream(stream) {
+  if (el.previewVideo) {
+    el.previewVideo.srcObject = stream;
+    el.previewVideo.classList.remove('mirrored');
+  }
+  if (el.previewBg) {
+    el.previewBg.srcObject = stream;
+    el.previewBg.classList.remove('mirrored');
+  }
+}
+
+async function playPreviewVideos() {
+  if (el.previewVideo) await el.previewVideo.play().catch(() => {});
+  if (el.previewBg) await el.previewBg.play().catch(() => {});
+}
+
+async function tryLockPortrait() {
+  if (!isMobileTouchDevice()) return false;
+  try {
+    if (screen.orientation?.lock) {
+      await screen.orientation.lock('portrait');
+      return true;
+    }
+  } catch {
+    // Android Chrome often requires fullscreen before screen.orientation.lock succeeds
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+      }
+      if (screen.orientation?.lock) {
+        await screen.orientation.lock('portrait');
+        return true;
+      }
+    } catch {
+      // iOS Safari does not support screen.orientation.lock; fallback overlay handles landscape
+    }
+  }
+  return false;
+}
+
+function releaseOrientationAndFullscreen() {
+  try { screen.orientation?.unlock?.(); } catch {}
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+
+function syncOrientationGuard() {
+  const activeMobileStage = Boolean(localStream && el.stepStage && !el.stepStage.hidden && isMobileTouchDevice());
+  const isLandscape = activeMobileStage && window.innerWidth > window.innerHeight;
+  orientationPaused = isLandscape;
+  if (el.rotateOverlay) {
+    el.rotateOverlay.hidden = !isLandscape;
+  }
+  if (localStream) {
+    for (const track of localStream.getVideoTracks()) {
+      if (track.enabled === isLandscape) {
+        track.enabled = !isLandscape;
+      }
+    }
+  }
 }
 
 async function acquireWakeLock() {
@@ -125,14 +226,15 @@ async function acquireWakeLock() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && localStream) {
     acquireWakeLock();
+    syncOrientationGuard();
   }
 });
 
+// Always request portrait 9:16 video capture
 function buildIdealVideoConstraints(extra = {}) {
-  const isPortrait = window.innerHeight > window.innerWidth;
   return {
-    width: { ideal: isPortrait ? 720 : 1280 },
-    height: { ideal: isPortrait ? 1280 : 720 },
+    width: { ideal: 720 },
+    height: { ideal: 1280 },
     frameRate: { ideal: 30 },
     ...extra,
   };
@@ -186,19 +288,9 @@ function syncCaptureInfo() {
     deviceId: s.deviceId ? String(s.deviceId).slice(0, 64) : '',
   };
 
-  // Match local preview container aspect ratio to real stream dimensions (uncropped, no stretch)
-  if (el.videoWrap && vw > 0 && vh > 0) {
-    el.videoWrap.style.aspectRatio = `${vw} / ${vh}`;
-    el.videoWrap.style.setProperty('--aud-ar', `${vw} / ${vh}`);
-    el.videoWrap.style.setProperty('--aud-ar-num', String(vw / vh));
-  }
   el.previewVideo.classList.remove('mirrored');
-
-  // Show non-blocking landscape hint only when device/stream is portrait
-  if (el.orientHint) {
-    const streamPortrait = vw && vh ? vh > vw : window.innerHeight > window.innerWidth;
-    el.orientHint.hidden = !streamPortrait;
-  }
+  el.previewBg?.classList.remove('mirrored');
+  syncOrientationGuard();
 }
 
 async function openVideoTrack(mode, deviceId = null) {
@@ -258,7 +350,6 @@ async function pickPreferredDeviceId(targetMode, currentDeviceId) {
     });
 
     if (dirMatches.length > 0) {
-      // Avoid silently picking a telephoto/ultra-wide rear camera when a standard main lens exists
       const mainLens = dirMatches.find((d) => !secondaryLensRe.test(d.label || ''));
       return (mainLens || dirMatches[0]).deviceId;
     }
@@ -336,7 +427,6 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
   const audioTracks = localStream.getAudioTracks();
 
   try {
-    // Android Chrome locks the camera hardware until the active video track is stopped
     oldVideoTracks.forEach((t) => {
       try { t.stop(); } catch {}
     });
@@ -346,7 +436,6 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
       newVideoTrack = await openVideoTrack(nextMode, deviceId);
     } else {
       try {
-        // When flipping to rear, pick standard main rear lens if identifiable
         const preferredBackId = nextMode === 'environment' ? await pickPreferredDeviceId('environment', oldDeviceId) : null;
         newVideoTrack = preferredBackId
           ? await openVideoTrack(nextMode, preferredBackId)
@@ -394,9 +483,9 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
       : inferFacingFromLabel(newVideoTrack.label, nextMode);
     facingMode = reportedFacing || nextMode;
 
-    el.previewVideo.srcObject = localStream;
+    attachPreviewStream(localStream);
     syncCaptureInfo();
-    await el.previewVideo.play().catch(() => {});
+    await playPreviewVideos();
     syncCaptureInfo();
     applyAudioMuteState();
     reportAudienceStats();
@@ -412,9 +501,9 @@ async function switchCameraTrack({ targetMode = null, deviceId = null } = {}) {
         }
       }
       localStream = recovered;
-      el.previewVideo.srcObject = localStream;
+      attachPreviewStream(localStream);
       syncCaptureInfo();
-      await el.previewVideo.play().catch(() => {});
+      await playPreviewVideos();
     } catch {}
     el.stageError.textContent = err.message || 'Could not switch camera.';
     el.stageError.hidden = false;
@@ -430,11 +519,13 @@ el.flipBtn.addEventListener('click', () => {
 });
 
 const onViewportOrVideoChange = () => {
+  syncOrientationGuard();
   if (!localStream) return;
   setTimeout(syncCaptureInfo, 80);
 };
 window.addEventListener('orientationchange', onViewportOrVideoChange);
 window.addEventListener('resize', onViewportOrVideoChange);
+screen.orientation?.addEventListener?.('change', onViewportOrVideoChange);
 el.previewVideo.addEventListener('loadedmetadata', syncCaptureInfo);
 el.previewVideo.addEventListener('loadeddata', syncCaptureInfo);
 el.previewVideo.addEventListener('playing', syncCaptureInfo);
@@ -442,6 +533,7 @@ el.previewVideo.addEventListener('resize', syncCaptureInfo);
 
 async function sendThumbnail() {
   if (!localStream || !sessionToken || !['waiting', 'onair'].includes(currentStatus)) return;
+  if (orientationPaused) return;
   if (el.previewVideo.videoWidth === 0) return;
 
   const canvas = document.createElement('canvas');
@@ -452,7 +544,6 @@ async function sendThumbnail() {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#05070c';
   ctx.fillRect(0, 0, w, h);
-  // Fit uncropped using Math.min so admin lobby thumbnail matches full-frame view
   const vw = el.previewVideo.videoWidth;
   const vh = el.previewVideo.videoHeight;
   const scale = Math.min(w / vw, h / vh);
@@ -496,9 +587,10 @@ async function autoRejoinIfNeeded() {
       sessionToken = data.session_token;
       localStorage.setItem(storageKey, sessionToken);
       if (Array.isArray(data.ice_servers)) iceServers = data.ice_servers;
+      if (typeof data.display_name === 'string') setGuestDisplayName(data.display_name);
       closeAllPeers();
       currentStatus = data.status || 'waiting';
-      setBanner('waiting', 'Waiting in lobby');
+      setTopbar('waiting', 'Waiting in lobby');
       setTimeout(sendThumbnail, 200);
     } else if (resp.status === 403) {
       localStorage.removeItem(storageKey);
@@ -506,6 +598,7 @@ async function autoRejoinIfNeeded() {
       teardownMediaAndLoops();
       el.stepStage.hidden = true;
       el.stepEnded.hidden = false;
+      setEndedBanner('err', 'Removed from event');
       el.endedTitle.textContent = 'Session Ended';
       el.endedDesc.textContent = data.error || 'Unable to rejoin this event.';
     }
@@ -623,37 +716,38 @@ async function handleIncomingSignal(sig) {
 async function handleServerState(state) {
   currentStatus = state.status;
   adminMuted = !!state.muted_by_admin;
+  if (typeof state.display_name === 'string') {
+    setGuestDisplayName(state.display_name);
+  }
   applyAudioMuteState();
 
   if (state.status === 'onair') {
-    setBanner('onair', state.blackout ? `ON AIR — Slot ${state.slot_no || 1} (Blackout)` : `ON AIR — Slot ${state.slot_no || 1}`);
-    el.videoWrap.classList.add('is-onair');
-    el.onairFrame.hidden = false;
+    setTopbar('onair', state.blackout ? 'ON AIR (Blackout)' : 'ON AIR');
+    el.videoWrap?.classList.add('is-onair');
   } else if (state.status === 'waiting') {
-    setBanner('waiting', state.preview_active ? 'Host is previewing your camera...' : 'Waiting in lobby');
-    el.videoWrap.classList.remove('is-onair');
-    el.onairFrame.hidden = true;
+    setTopbar('waiting', state.preview_active ? 'Host is previewing your camera...' : 'Waiting in lobby');
+    el.videoWrap?.classList.remove('is-onair');
   } else if (state.status === 'removed' || state.status === 'banned' || state.status === 'event_closed' || state.status === 'left') {
     teardownMediaAndLoops();
     el.stepStage.hidden = true;
     el.stepEnded.hidden = false;
     if (state.status === 'banned') {
-      setBanner('err', 'Removed from event');
+      setEndedBanner('err', 'Removed from event');
       el.endedTitle.textContent = 'Removed by Host';
       el.endedDesc.textContent = 'You have been banned from participating in this event.';
       el.rejoinBtn.hidden = true;
     } else if (state.status === 'removed') {
-      setBanner('warn', 'Removed by host');
+      setEndedBanner('warn', 'Removed by host');
       el.endedTitle.textContent = 'Removed from Lobby';
       el.endedDesc.textContent = 'The host removed your connection.';
       el.rejoinBtn.hidden = false;
     } else if (state.status === 'event_closed') {
-      setBanner('warn', 'Event closed');
+      setEndedBanner('warn', 'Event closed');
       el.endedTitle.textContent = 'Event Ended';
       el.endedDesc.textContent = 'Thank you for participating! This event has closed.';
       el.rejoinBtn.hidden = true;
     } else {
-      setBanner('warn', 'Disconnected');
+      setEndedBanner('warn', 'Disconnected');
       el.endedTitle.textContent = 'You Left the Wall';
       el.endedDesc.textContent = 'Your camera and microphone are turned off.';
       el.rejoinBtn.hidden = false;
@@ -684,24 +778,29 @@ function teardownMediaAndLoops() {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
   }
-  if (el.previewVideo) {
-    try { el.previewVideo.pause(); } catch {}
-    el.previewVideo.srcObject = null;
-    el.previewVideo.classList.remove('mirrored');
-    try { el.previewVideo.load(); } catch {}
+  for (const v of [el.previewVideo, el.previewBg]) {
+    if (!v) continue;
+    try { v.pause(); } catch {}
+    v.srcObject = null;
+    v.classList.remove('mirrored');
+    try { v.load(); } catch {}
   }
   if (el.videoWrap) {
-    el.videoWrap.style.aspectRatio = '';
-    el.videoWrap.style.removeProperty('--aud-ar');
-    el.videoWrap.style.removeProperty('--aud-ar-num');
     el.videoWrap.classList.remove('is-onair');
   }
-  if (el.onairFrame) el.onairFrame.hidden = true;
-  if (el.orientHint) el.orientHint.hidden = true;
+  if (el.controlsBar) {
+    el.controlsBar.classList.remove('is-onair');
+  }
+  if (el.rotateOverlay) {
+    el.rotateOverlay.hidden = true;
+  }
   if (el.stageError) {
     el.stageError.hidden = true;
     el.stageError.textContent = '';
   }
+  orientationPaused = false;
+  setStageMode(false);
+  releaseOrientationAndFullscreen();
   currentCaptureSettings = {};
   currentStatus = 'idle';
   activeTargets = [];
@@ -765,8 +864,9 @@ el.joinForm.addEventListener('submit', async (ev) => {
 
   try {
     teardownMediaAndLoops();
+    await tryLockPortrait();
     localStream = await startCamera(facingMode);
-    el.previewVideo.srcObject = localStream;
+    attachPreviewStream(localStream);
     syncCaptureInfo();
     await acquireWakeLock();
 
@@ -790,15 +890,16 @@ el.joinForm.addEventListener('submit', async (ev) => {
     sessionToken = data.session_token;
     localStorage.setItem(storageKey, sessionToken);
     if (Array.isArray(data.ice_servers)) iceServers = data.ice_servers;
+    setGuestDisplayName(data.display_name || '');
 
     el.stepJoin.hidden = true;
     el.stepEnded.hidden = true;
     el.stepStage.hidden = false;
-    setBanner('waiting', 'Waiting in lobby');
+    setStageMode(true);
+    setTopbar('waiting', 'Waiting in lobby');
     applyAudioMuteState();
 
-    // Ensure playback & aspect sync run after the stage becomes visible (critical on mobile rejoin)
-    await el.previewVideo.play().catch(() => {});
+    await playPreviewVideos();
     syncCaptureInfo();
     requestAnimationFrame(() => syncCaptureInfo());
 
@@ -820,7 +921,7 @@ el.joinForm.addEventListener('submit', async (ev) => {
         if (err && err.status === 404) {
           autoRejoinIfNeeded();
         } else {
-          setBanner('warn', 'Connection lost — reconnecting...');
+          setTopbar('warn', 'Connection lost — reconnecting...');
         }
       },
       getIntervalMs: () => (activeTargets.length > 0 ? (cfg.pollFastMs || 700) : (cfg.pollIdleMs || 2000)),
@@ -850,7 +951,7 @@ async function leaveStream() {
   el.endedTitle.textContent = 'You Left the Wall';
   el.endedDesc.textContent = 'Your camera and microphone are turned off.';
   el.rejoinBtn.hidden = false;
-  setBanner('warn', 'Disconnected');
+  setEndedBanner('warn', 'Disconnected');
 }
 
 el.leaveBtn.addEventListener('click', leaveStream);
@@ -861,7 +962,6 @@ el.rejoinBtn.addEventListener('click', () => {
   el.stepStage.hidden = true;
   el.stepEnded.hidden = true;
   el.stepJoin.hidden = false;
-  el.statusBanner.hidden = true;
   el.startBtn.disabled = false;
   el.startBtn.textContent = 'Start Camera & Join';
 });

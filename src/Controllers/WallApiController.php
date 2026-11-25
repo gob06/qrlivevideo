@@ -166,13 +166,19 @@ class WallApiController
     {
         $eid = (int)$event['id'];
         $slots = Database::fetchAll(
-            "SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.display_name, p.message, p.name_hidden, p.muted_by_admin, p.facing_mode, p.capture_settings, p.status
+            "SELECT ws.slot_no, ws.fit_mode, p.id AS participant_id, p.muted_by_admin, p.facing_mode, p.capture_settings, p.status
              FROM wall_slots ws
              JOIN participants p ON p.id = ws.participant_id
              WHERE ws.event_id = ? AND p.status = 'onair'
              ORDER BY ws.slot_no ASC",
             [$eid]
         );
+
+        $activeRow = Database::fetchOne(
+            "SELECT COUNT(*) AS cnt FROM participants WHERE event_id = ? AND status IN ('waiting', 'onair')",
+            [$eid]
+        );
+        $isFull = ((int)($activeRow['cnt'] ?? 0)) >= (int)$event['max_participants'];
 
         $pdo = Database::pdo();
         $pdo->beginTransaction();
@@ -187,18 +193,35 @@ class WallApiController
         }
         $pdo->commit();
 
+        $sideQrSize = max(320, min(560, (int)($event['wall_qr_size'] ?? 480)));
+        $sideQrSide = in_array(($event['wall_qr_side'] ?? 'right'), ['right', 'left'], true) ? (string)$event['wall_qr_side'] : 'right';
+        $sideQrValign = in_array(($event['wall_qr_valign'] ?? 'center'), ['center', 'top'], true) ? (string)$event['wall_qr_valign'] : 'center';
+        $sideQrOpacity = max(0, min(100, (int)($event['wall_qr_bg_opacity'] ?? 100)));
+
         return [
             'event_status' => $event['status'],
+            'join_locked' => (int)$event['join_locked'] === 1,
+            'is_full' => $isFull,
             'title' => $event['title'],
             'blackout' => (int)$event['blackout'] === 1,
             'layout' => $event['layout'],
             'max_wall_feeds' => (int)$event['max_wall_feeds'],
-            'show_labels' => (int)$event['show_labels'] === 1,
+            'show_labels' => false,
             'audio_enabled' => (int)$event['audio_enabled'] === 1,
             'wall_fit_mode' => $event['wall_fit_mode'] ?? 'fit',
             'wall_tile_bg' => $event['wall_tile_bg'] ?? 'blur',
             'wall_tile_bg_color' => $event['wall_tile_bg_color'] ?? '#090d16',
             'mirror_front_wall' => false,
+            'side_qr' => [
+                'enabled' => (int)($event['wall_qr_side_enabled'] ?? 1) === 1,
+                'hidden' => (int)($event['wall_qr_hidden'] ?? 0) === 1,
+                'side' => $sideQrSide,
+                'size' => $sideQrSize,
+                'valign' => $sideQrValign,
+                'bg_color' => (string)($event['wall_qr_bg_color'] ?? '#090d16'),
+                'bg_opacity' => $sideQrOpacity,
+                'show_title' => (int)($event['wall_qr_show_title'] ?? 1) === 1,
+            ],
             'qr' => [
                 'joinUrl' => Bootstrap::baseUrl() . '/join/' . rawurlencode($event['slug']),
                 'logoUrl' => $event['logo_filename'] ? '/uploads/logos/' . rawurlencode($event['logo_filename']) : null,
@@ -213,8 +236,6 @@ class WallApiController
             'slots' => array_map(static fn(array $s): array => [
                 'slot_no' => (int)$s['slot_no'],
                 'participant_id' => (int)$s['participant_id'],
-                'display_name' => (int)$s['name_hidden'] === 1 ? 'Guest' : $s['display_name'],
-                'message' => (int)$s['name_hidden'] === 1 ? '' : $s['message'],
                 'muted' => (int)$s['muted_by_admin'] === 1,
                 'fit_mode' => $s['fit_mode'] ?? null,
                 'facing_mode' => $s['facing_mode'] ?? 'unknown',

@@ -9,7 +9,7 @@
 
     # Block direct access to internal, dev, and sensitive files/directories
     RewriteRule ^(composer\.(json|lock)|package(-lock)?\.json|bun\.lock|tsconfig\.json|vite\.config\.ts|server\.ts|metadata\.json|index\.html|README\.md|schema\.(sqlite|mariadb)\.sql|router\.php|cron_cleanup\.php|database\.sqlite.*)$ - [F,L]
-    RewriteRule ^(src|config|views|storage|node_modules|dist)(/|$) - [F,L]
+    RewriteRule ^(src|config|views|storage|migrations|node_modules|dist)(/|$) - [F,L]
 
     # Allow one-time installer directly (it self-locks via storage/install.lock)
     RewriteRule ^install\.php$ - [L]

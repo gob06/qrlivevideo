@@ -52,7 +52,7 @@ class Database
 
     private static function ensureSchemaMigrations(PDO $pdo, string $driver): void
     {
-        $flag = Bootstrap::rootPath('storage/schema_v4.migrated');
+        $flag = Bootstrap::rootPath('storage/schema_v5.migrated');
         if (is_file($flag)) {
             return;
         }
@@ -72,6 +72,14 @@ class Database
                 $addMySqlCol('events', 'wall_tile_bg', "ENUM('blur', 'solid', 'transparent') NOT NULL DEFAULT 'blur' AFTER wall_fit_mode");
                 $addMySqlCol('events', 'wall_tile_bg_color', "VARCHAR(20) NOT NULL DEFAULT '#090d16' AFTER wall_tile_bg");
                 $addMySqlCol('events', 'mirror_front_wall', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER wall_tile_bg_color');
+                $addMySqlCol('events', 'wall_qr_side_enabled', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER mirror_front_wall');
+                $addMySqlCol('events', 'wall_qr_hidden', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER wall_qr_side_enabled');
+                $addMySqlCol('events', 'wall_qr_side', "ENUM('right', 'left') NOT NULL DEFAULT 'right' AFTER wall_qr_hidden");
+                $addMySqlCol('events', 'wall_qr_size', 'SMALLINT UNSIGNED NOT NULL DEFAULT 480 AFTER wall_qr_side');
+                $addMySqlCol('events', 'wall_qr_valign', "ENUM('center', 'top') NOT NULL DEFAULT 'center' AFTER wall_qr_size");
+                $addMySqlCol('events', 'wall_qr_bg_color', "VARCHAR(20) NOT NULL DEFAULT '#090d16' AFTER wall_qr_valign");
+                $addMySqlCol('events', 'wall_qr_bg_opacity', 'TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER wall_qr_bg_color');
+                $addMySqlCol('events', 'wall_qr_show_title', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER wall_qr_bg_opacity');
                 $addMySqlCol('participants', 'facing_mode', "VARCHAR(24) NOT NULL DEFAULT '' AFTER thumb_version");
                 $addMySqlCol('participants', 'capture_settings', 'TEXT DEFAULT NULL AFTER facing_mode');
                 $addMySqlCol('wall_slots', 'fit_mode', "ENUM('fit', 'fill', 'stretch') DEFAULT NULL AFTER participant_id");
@@ -99,6 +107,14 @@ class Database
                 $addSqliteCol('events', 'wall_tile_bg', "TEXT NOT NULL DEFAULT 'blur'");
                 $addSqliteCol('events', 'wall_tile_bg_color', "TEXT NOT NULL DEFAULT '#090d16'");
                 $addSqliteCol('events', 'mirror_front_wall', 'INTEGER NOT NULL DEFAULT 0');
+                $addSqliteCol('events', 'wall_qr_side_enabled', 'INTEGER NOT NULL DEFAULT 1');
+                $addSqliteCol('events', 'wall_qr_hidden', 'INTEGER NOT NULL DEFAULT 0');
+                $addSqliteCol('events', 'wall_qr_side', "TEXT NOT NULL DEFAULT 'right'");
+                $addSqliteCol('events', 'wall_qr_size', 'INTEGER NOT NULL DEFAULT 480');
+                $addSqliteCol('events', 'wall_qr_valign', "TEXT NOT NULL DEFAULT 'center'");
+                $addSqliteCol('events', 'wall_qr_bg_color', "TEXT NOT NULL DEFAULT '#090d16'");
+                $addSqliteCol('events', 'wall_qr_bg_opacity', 'INTEGER NOT NULL DEFAULT 100');
+                $addSqliteCol('events', 'wall_qr_show_title', 'INTEGER NOT NULL DEFAULT 1');
                 $addSqliteCol('participants', 'facing_mode', "TEXT NOT NULL DEFAULT ''");
                 $addSqliteCol('participants', 'capture_settings', "TEXT NOT NULL DEFAULT ''");
                 $addSqliteCol('wall_slots', 'fit_mode', 'TEXT DEFAULT NULL');

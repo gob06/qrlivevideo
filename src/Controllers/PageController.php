@@ -70,8 +70,11 @@ class PageController
         $audioParam = strtolower((string)($_GET['audio'] ?? ''));
         $audioOverride = in_array($audioParam, ['on', 'off'], true) ? $audioParam : null;
 
-        $qrParam = strtolower((string)($_GET['qr'] ?? 'auto'));
-        $qrMode = in_array($qrParam, ['on', 'off', 'corner', 'auto'], true) ? $qrParam : 'auto';
+        $qrParam = strtolower((string)($_GET['qr'] ?? 'side'));
+        if ($qrParam === 'auto' || $qrParam === 'on') {
+            $qrParam = 'side';
+        }
+        $qrMode = in_array($qrParam, ['side', 'corner', 'off'], true) ? $qrParam : 'side';
 
         $isMonitor = ((string)($_GET['monitor'] ?? '0')) === '1';
         $viewerId = $isMonitor

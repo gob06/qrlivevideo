@@ -742,6 +742,7 @@ async function renderEventStudioView(eventId) {
               </label>
               <button type="button" class="btn btn-secondary btn-sm" id="st-labels-btn">Labels: On</button>
               <button type="button" class="btn btn-secondary btn-sm" id="st-audio-btn">Audio: Off</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="st-hide-qr-btn" title="Emergency Hide QR on OBS Wall">Hide QR</button>
             ` : ''}
             <button type="button" class="btn btn-warning btn-sm" id="st-clear-btn">Clear Wall (C)</button>
             <button type="button" class="btn btn-danger btn-sm" id="st-blackout-btn">Blackout (B)</button>
@@ -776,13 +777,25 @@ async function renderEventStudioView(eventId) {
           <div class="wall-frame-wrap" id="st-wall-wrap">
             <iframe id="st-wall-iframe" src="${esc(buildMonitorWallSrc(initial.event, 'studio'))}"></iframe>
           </div>
+          <div class="admin-info-strip" id="st-info-strip">
+            <div class="admin-info-url-group">
+              <span class="admin-info-tag">Admin-only info</span>
+              <code class="admin-info-url" id="st-info-join-url">${esc(initial.joinUrl)}</code>
+              <button type="button" class="btn btn-secondary btn-sm" id="st-info-copy-btn">Copy</button>
+            </div>
+            <div class="admin-info-metrics">
+              <span class="admin-info-waiting tabular" id="st-info-waiting">${Number(initial.counters.waiting || 0)} waiting</span>
+              <span class="admin-info-state" id="st-info-state" hidden></span>
+            </div>
+          </div>
         </section>
 
-        <!-- QR Branding & Event Settings (Tabbed to fit viewport) -->
+        <!-- QR Branding, Side QR Panel & Event Settings (Tabbed to fit viewport) -->
         <section class="panel studio-tools-panel">
           <div class="panel-head" style="flex-wrap:wrap;">
             <div class="seg-tabs" id="st-tools-tabs">
               <button type="button" class="seg-tab active" data-tool="qr">QR Branding</button>
+              ${canHost ? '<button type="button" class="seg-tab" data-tool="sideqr">Side QR Panel</button>' : ''}
               ${canHost ? '<button type="button" class="seg-tab" data-tool="settings">Event Settings</button>' : ''}
             </div>
             <div style="display:flex;gap:6px;align-items:center;">
@@ -857,6 +870,56 @@ async function renderEventStudioView(eventId) {
               </div>
             </div>
             ${canHost ? `
+            <div id="st-tab-sideqr" hidden>
+              <form id="side-qr-form" style="display:flex;flex-direction:column;gap:10px;">
+                <label style="display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;">
+                  <input type="checkbox" id="sqr-enabled"> Show side QR while live
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#fca5a5;">
+                  <input type="checkbox" id="sqr-hidden"> Emergency Hide QR (hides idle, side &amp; corner QR)
+                </label>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                  <label class="field">
+                    <span>Panel Side</span>
+                    <select id="sqr-side">
+                      <option value="right">Right edge (default)</option>
+                      <option value="left">Left edge</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>QR Vertical Align</span>
+                    <select id="sqr-valign">
+                      <option value="center">Centered (default)</option>
+                      <option value="top">Top aligned</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="field">
+                  <span style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span>QR Size: <strong id="sqr-size-val">480px</strong></span>
+                    <button type="button" class="btn btn-ghost btn-sm" id="sqr-reset-480" style="min-height:24px;padding:2px 8px;font-size:11px;">Reset 480px</button>
+                  </span>
+                  <input type="range" id="sqr-size" min="320" max="560" step="10" value="480">
+                </label>
+                <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:end;">
+                  <label class="field">
+                    <span>Panel Bg</span>
+                    <input type="color" id="sqr-bg-color" value="#090d16">
+                  </label>
+                  <label class="field">
+                    <span>Background Opacity: <strong id="sqr-opacity-val">100%</strong></span>
+                    <input type="range" id="sqr-bg-opacity" min="0" max="100" step="5" value="100">
+                  </label>
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+                  <input type="checkbox" id="sqr-show-title"> Show event title in side panel
+                </label>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+                  <button type="submit" class="btn btn-primary btn-sm">Save Side QR Panel</button>
+                  <span class="page-meta">Wall URL override: <code>?qr=side|corner|off</code></span>
+                </div>
+              </form>
+            </div>
             <div id="st-tab-settings" hidden>
               <form id="ev-settings-form" style="display:flex;flex-direction:column;gap:10px;">
                 <div style="padding:10px;border-radius:8px;background:#0d1422;border:1px solid var(--border-hairline);display:flex;flex-direction:column;gap:8px;">
@@ -949,7 +1012,7 @@ async function renderEventStudioView(eventId) {
   ro.observe(wallWrap);
   requestAnimationFrame(syncWallScale);
 
-  // Switch between QR Branding and Event Settings tabs
+  // Switch between QR Branding, Side QR Panel, and Event Settings tabs
   const toolsTabsEl = document.getElementById('st-tools-tabs');
   toolsTabsEl.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-tool]');
@@ -957,10 +1020,12 @@ async function renderEventStudioView(eventId) {
     const tool = btn.dataset.tool;
     toolsTabsEl.querySelectorAll('.seg-tab').forEach((b) => b.classList.toggle('active', b === btn));
     const qrTab = document.getElementById('st-tab-qr');
+    const sideQrTab = document.getElementById('st-tab-sideqr');
     const setTab = document.getElementById('st-tab-settings');
     const dlActions = document.getElementById('st-qr-dl-actions');
     const delBtn = document.getElementById('ev-delete-btn');
     if (qrTab) qrTab.hidden = tool !== 'qr';
+    if (sideQrTab) sideQrTab.hidden = tool !== 'sideqr';
     if (setTab) setTab.hidden = tool !== 'settings';
     if (dlActions) dlActions.hidden = tool !== 'qr';
     if (delBtn) delBtn.hidden = tool !== 'settings';
@@ -969,6 +1034,10 @@ async function renderEventStudioView(eventId) {
 
   // Wire Copy buttons
   document.getElementById('copy-join-btn').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(lastStateData.joinUrl);
+    toast('Join URL copied');
+  });
+  document.getElementById('st-info-copy-btn').addEventListener('click', async () => {
     await navigator.clipboard.writeText(lastStateData.joinUrl);
     toast('Join URL copied');
   });
@@ -1043,6 +1112,18 @@ async function renderEventStudioView(eventId) {
     });
     document.getElementById('st-audio-btn').addEventListener('click', () => {
       sendWallAction({ action: 'toggle_audio', audio_enabled: Number(lastStateData.event.audio_enabled) !== 1 });
+    });
+    document.getElementById('st-hide-qr-btn').addEventListener('click', async () => {
+      const nextHidden = Number(lastStateData.event.wall_qr_hidden) !== 1;
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: { wall_qr_hidden: nextHidden },
+        });
+        pokeWallIframe(wallIframe);
+        toast(nextHidden ? 'QR hidden on wall' : 'QR restored on wall');
+        await refreshState();
+      } catch (err) { toast(err.message); }
     });
   }
 
@@ -1360,6 +1441,70 @@ async function renderEventStudioView(eventId) {
       }
     });
 
+    // Side QR Panel controls
+    const syncSideQrInputs = (ev) => {
+      const enEl = document.getElementById('sqr-enabled');
+      const hidEl = document.getElementById('sqr-hidden');
+      const sideEl = document.getElementById('sqr-side');
+      const valignEl = document.getElementById('sqr-valign');
+      const sizeEl = document.getElementById('sqr-size');
+      const sizeValEl = document.getElementById('sqr-size-val');
+      const bgColEl = document.getElementById('sqr-bg-color');
+      const opEl = document.getElementById('sqr-bg-opacity');
+      const opValEl = document.getElementById('sqr-opacity-val');
+      const titleEl = document.getElementById('sqr-show-title');
+      if (!enEl || !sizeEl) return;
+
+      enEl.checked = ev.wall_qr_side_enabled === undefined ? true : Number(ev.wall_qr_side_enabled) === 1;
+      hidEl.checked = Number(ev.wall_qr_hidden || 0) === 1;
+      sideEl.value = ev.wall_qr_side === 'left' ? 'left' : 'right';
+      valignEl.value = ev.wall_qr_valign === 'top' ? 'top' : 'center';
+      const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 480)));
+      sizeEl.value = String(sz);
+      sizeValEl.textContent = `${sz}px`;
+      bgColEl.value = ev.wall_qr_bg_color || '#090d16';
+      const op = ev.wall_qr_bg_opacity === undefined ? 100 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
+      opEl.value = String(op);
+      opValEl.textContent = `${op}%`;
+      titleEl.checked = ev.wall_qr_show_title === undefined ? true : Number(ev.wall_qr_show_title) === 1;
+    };
+    syncSideQrInputs(initial.event);
+
+    document.getElementById('sqr-size')?.addEventListener('input', (e) => {
+      document.getElementById('sqr-size-val').textContent = `${e.target.value}px`;
+    });
+    document.getElementById('sqr-bg-opacity')?.addEventListener('input', (e) => {
+      document.getElementById('sqr-opacity-val').textContent = `${e.target.value}%`;
+    });
+    document.getElementById('sqr-reset-480')?.addEventListener('click', () => {
+      document.getElementById('sqr-size').value = '480';
+      document.getElementById('sqr-size-val').textContent = '480px';
+    });
+    document.getElementById('side-qr-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: {
+            wall_qr_side_enabled: document.getElementById('sqr-enabled').checked,
+            wall_qr_hidden: document.getElementById('sqr-hidden').checked,
+            wall_qr_side: document.getElementById('sqr-side').value,
+            wall_qr_valign: document.getElementById('sqr-valign').value,
+            wall_qr_size: Number(document.getElementById('sqr-size').value),
+            wall_qr_bg_color: document.getElementById('sqr-bg-color').value,
+            wall_qr_bg_opacity: Number(document.getElementById('sqr-bg-opacity').value),
+            wall_qr_show_title: document.getElementById('sqr-show-title').checked,
+          },
+        });
+        pokeWallIframe(wallIframe);
+        toast('Side QR panel settings saved');
+        await refreshState();
+        if (lastStateData?.event) syncSideQrInputs(lastStateData.event);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
     document.getElementById('ev-regen-key-btn').addEventListener('click', async () => {
       const res = await api(`/api/admin/events/${eventId}/settings`, {
         method: 'POST',
@@ -1663,12 +1808,29 @@ async function renderEventStudioView(eventId) {
     document.getElementById('st-ban-count').textContent = String((data.bans || []).length);
 
     const newVer = Number(ev.state_version);
-    if (lastStateVersion !== null && newVer !== lastStateVersion && ev.last_action_by && ev.last_action_by !== cfg.user.display_name) {
+    const versionChanged = lastStateVersion !== null && newVer !== lastStateVersion;
+    if (versionChanged && ev.last_action_by && ev.last_action_by !== cfg.user.display_name) {
       const notice = document.getElementById('st-conflict-notice');
       notice.textContent = `Updated by ${ev.last_action_by}: ${ev.last_action_summary}`;
       notice.hidden = false;
     }
+    if (versionChanged) {
+      pokeWallIframe(wallIframe);
+    }
     lastStateVersion = newVer;
+
+    const infoUrlEl = document.getElementById('st-info-join-url');
+    const infoWaitEl = document.getElementById('st-info-waiting');
+    const infoStateEl = document.getElementById('st-info-state');
+    if (infoUrlEl) infoUrlEl.textContent = lastStateData.joinUrl;
+    if (infoWaitEl) infoWaitEl.textContent = `${Number(data.counters?.waiting || 0)} waiting`;
+    if (infoStateEl) {
+      const stateNotes = [];
+      if (ev.status !== 'active') stateNotes.push('EVENT CLOSED');
+      else if (Number(ev.join_locked) === 1) stateNotes.push('JOIN LOCKED');
+      infoStateEl.textContent = stateNotes.join(' · ');
+      infoStateEl.hidden = stateNotes.length === 0;
+    }
 
     if (canHost) {
       document.getElementById('st-layout').value = ev.layout;
@@ -1681,6 +1843,37 @@ async function renderEventStudioView(eventId) {
       colEl.hidden = tileBg !== 'solid';
       document.getElementById('st-labels-btn').textContent = Number(ev.show_labels) === 1 ? 'Labels: On' : 'Labels: Off';
       document.getElementById('st-audio-btn').textContent = Number(ev.audio_enabled) === 1 ? 'Audio: On' : 'Audio: Off';
+      const hideQrBtn = document.getElementById('st-hide-qr-btn');
+      if (hideQrBtn) {
+        const qrHid = Number(ev.wall_qr_hidden || 0) === 1;
+        hideQrBtn.textContent = qrHid ? 'QR: Hidden' : 'Hide QR';
+        hideQrBtn.className = `btn ${qrHid ? 'btn-danger' : 'btn-secondary'} btn-sm`;
+      }
+      const sideQrTab = document.getElementById('st-tab-sideqr');
+      if (versionChanged && sideQrTab && !sideQrTab.contains(document.activeElement)) {
+        const enEl = document.getElementById('sqr-enabled');
+        const hidEl = document.getElementById('sqr-hidden');
+        const sideEl = document.getElementById('sqr-side');
+        const valignEl = document.getElementById('sqr-valign');
+        const sizeEl = document.getElementById('sqr-size');
+        const bgColEl = document.getElementById('sqr-bg-color');
+        const opEl = document.getElementById('sqr-bg-opacity');
+        const titleEl = document.getElementById('sqr-show-title');
+        if (enEl && sizeEl) {
+          enEl.checked = ev.wall_qr_side_enabled === undefined ? true : Number(ev.wall_qr_side_enabled) === 1;
+          hidEl.checked = Number(ev.wall_qr_hidden || 0) === 1;
+          sideEl.value = ev.wall_qr_side === 'left' ? 'left' : 'right';
+          valignEl.value = ev.wall_qr_valign === 'top' ? 'top' : 'center';
+          const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 480)));
+          sizeEl.value = String(sz);
+          document.getElementById('sqr-size-val').textContent = `${sz}px`;
+          bgColEl.value = ev.wall_qr_bg_color || '#090d16';
+          const op = ev.wall_qr_bg_opacity === undefined ? 100 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
+          opEl.value = String(op);
+          document.getElementById('sqr-opacity-val').textContent = `${op}%`;
+          titleEl.checked = ev.wall_qr_show_title === undefined ? true : Number(ev.wall_qr_show_title) === 1;
+        }
+      }
       const prevEl = document.getElementById('ev-join-brand-preview');
       const statusEl = document.getElementById('ev-join-brand-status');
       if (prevEl && statusEl) {
@@ -1767,13 +1960,25 @@ async function renderMonitorView(eventId) {
       <section class="panel">
         <div class="panel-head">
           <h2 class="panel-title">Program / Wall Output</h2>
-          <div style="display:flex;align-items:center;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span id="mon-pgm-badge" style="font-size:13px;font-weight:800;">IDLE (QR SHOWING)</span>
+            ${['super_admin', 'host'].includes(cfg.user.role) ? '<button type="button" class="btn btn-secondary btn-sm" id="mon-hide-qr-btn">Hide QR</button>' : ''}
             <button type="button" class="btn btn-ghost btn-sm" id="mon-refresh-wall-btn" title="Reload program output preview">Refresh</button>
           </div>
         </div>
         <div class="wall-frame-wrap" id="mon-wall-wrap">
           <iframe id="mon-wall-iframe" src="${esc(buildMonitorWallSrc(initial.event, 'mon'))}"></iframe>
+        </div>
+        <div class="admin-info-strip" id="mon-info-strip">
+          <div class="admin-info-url-group">
+            <span class="admin-info-tag">Admin-only info</span>
+            <code class="admin-info-url" id="mon-info-join-url">${esc(initial.joinUrl)}</code>
+            <button type="button" class="btn btn-secondary btn-sm" id="mon-info-copy-btn">Copy</button>
+          </div>
+          <div class="admin-info-metrics">
+            <span class="admin-info-waiting tabular" id="mon-info-waiting">${Number(initial.counters.waiting || 0)} waiting</span>
+            <span class="admin-info-state" id="mon-info-state" hidden></span>
+          </div>
         </div>
       </section>
 
@@ -1833,8 +2038,10 @@ async function renderMonitorView(eventId) {
 
   const wallWrap = document.getElementById('mon-wall-wrap');
   const wallIframe = document.getElementById('mon-wall-iframe');
+  const canHostMon = ['super_admin', 'host'].includes(cfg.user.role);
   let monitorWallKey = String(initial.event.wall_key || '');
   let lastMonOnairCount = Number(initial.counters.onair || 0);
+  let lastMonStateVersion = Number(initial.event.state_version || 0);
   const syncMonScale = () => {
     if (!wallWrap.isConnected) {
       monRo.disconnect();
@@ -1846,6 +2053,26 @@ async function renderMonitorView(eventId) {
   const monRo = new ResizeObserver(syncMonScale);
   monRo.observe(wallWrap);
   requestAnimationFrame(syncMonScale);
+
+  document.getElementById('mon-info-copy-btn').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(lastStateData.joinUrl);
+    toast('Join URL copied');
+  });
+
+  if (canHostMon) {
+    document.getElementById('mon-hide-qr-btn')?.addEventListener('click', async () => {
+      const nextHidden = Number(lastStateData.event.wall_qr_hidden) !== 1;
+      try {
+        await api(`/api/admin/events/${eventId}/settings`, {
+          method: 'POST',
+          json: { wall_qr_hidden: nextHidden },
+        });
+        pokeWallIframe(wallIframe);
+        toast(nextHidden ? 'QR hidden on wall' : 'QR restored on wall');
+        await refreshMon();
+      } catch (err) { toast(err.message); }
+    });
+  }
 
   document.getElementById('mon-refresh-wall-btn').addEventListener('click', () => {
     const ev = lastStateData?.event || initial.event;
@@ -1926,16 +2153,38 @@ async function renderMonitorView(eventId) {
   }, 1000);
 
   function renderMonitorData(data) {
-    lastStateData = data;
+    lastStateData = normalizeEventUrls(data);
     const c = data.counters;
     baseDurationSec = Number(c.duration_sec || 0);
+    const monVer = Number(data.event.state_version || 0);
     if (data.event.wall_key && String(data.event.wall_key) !== monitorWallKey) {
       monitorWallKey = String(data.event.wall_key);
       wallIframe.src = buildMonitorWallSrc(data.event, 'mon');
-    } else if (Number(c.onair || 0) !== lastMonOnairCount) {
+    } else if (Number(c.onair || 0) !== lastMonOnairCount || monVer !== lastMonStateVersion) {
       pokeWallIframe(wallIframe);
     }
     lastMonOnairCount = Number(c.onair || 0);
+    lastMonStateVersion = monVer;
+
+    const monUrlEl = document.getElementById('mon-info-join-url');
+    const monWaitEl = document.getElementById('mon-info-waiting');
+    const monStateEl = document.getElementById('mon-info-state');
+    if (monUrlEl) monUrlEl.textContent = lastStateData.joinUrl;
+    if (monWaitEl) monWaitEl.textContent = `${Number(c.waiting || 0)} waiting`;
+    if (monStateEl) {
+      const notes = [];
+      if (data.event.status !== 'active') notes.push('EVENT CLOSED');
+      else if (Number(data.event.join_locked) === 1) notes.push('JOIN LOCKED');
+      monStateEl.textContent = notes.join(' · ');
+      monStateEl.hidden = notes.length === 0;
+    }
+    const monHideBtn = document.getElementById('mon-hide-qr-btn');
+    if (monHideBtn) {
+      const qrHid = Number(data.event.wall_qr_hidden || 0) === 1;
+      monHideBtn.textContent = qrHid ? 'QR: Hidden' : 'Hide QR';
+      monHideBtn.className = `btn ${qrHid ? 'btn-danger' : 'btn-secondary'} btn-sm`;
+    }
+
     document.getElementById('kpi-joined').textContent = String(c.total_joined);
     document.getElementById('kpi-waiting').textContent = String(c.waiting);
     document.getElementById('kpi-onair').textContent = String(c.onair);

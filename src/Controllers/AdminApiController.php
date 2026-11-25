@@ -204,10 +204,37 @@ class AdminApiController
             : ($event['wall_tile_bg_color'] ?? '#090d16');
         $mirrorFrontWall = 0;
 
+        $wallQrSideEnabled = array_key_exists('wall_qr_side_enabled', $in)
+            ? ((int)!empty($in['wall_qr_side_enabled']))
+            : (int)($event['wall_qr_side_enabled'] ?? 1);
+        $wallQrHidden = array_key_exists('wall_qr_hidden', $in)
+            ? ((int)!empty($in['wall_qr_hidden']))
+            : (int)($event['wall_qr_hidden'] ?? 0);
+        $wallQrSide = isset($in['wall_qr_side']) && in_array($in['wall_qr_side'], ['right', 'left'], true)
+            ? $in['wall_qr_side']
+            : (string)($event['wall_qr_side'] ?? 'right');
+        $wallQrSize = isset($in['wall_qr_size'])
+            ? max(320, min(560, (int)$in['wall_qr_size']))
+            : max(320, min(560, (int)($event['wall_qr_size'] ?? 480)));
+        $wallQrValign = isset($in['wall_qr_valign']) && in_array($in['wall_qr_valign'], ['center', 'top'], true)
+            ? $in['wall_qr_valign']
+            : (string)($event['wall_qr_valign'] ?? 'center');
+        $wallQrBgColor = isset($in['wall_qr_bg_color'])
+            ? Validator::hexColor((string)$in['wall_qr_bg_color'], '#090d16', false)
+            : (string)($event['wall_qr_bg_color'] ?? '#090d16');
+        $wallQrBgOpacity = isset($in['wall_qr_bg_opacity'])
+            ? max(0, min(100, (int)$in['wall_qr_bg_opacity']))
+            : max(0, min(100, (int)($event['wall_qr_bg_opacity'] ?? 100)));
+        $wallQrShowTitle = array_key_exists('wall_qr_show_title', $in)
+            ? ((int)!empty($in['wall_qr_show_title']))
+            : (int)($event['wall_qr_show_title'] ?? 1);
+
         Database::execute(
             'UPDATE events SET title = ?, wall_key = ?, status = ?, join_locked = ?, max_participants = ?, max_wall_feeds = ?,
              layout = ?, show_labels = ?, audio_enabled = ?, blackout = ?, logo_image_id = ?, join_logo_image_id = ?,
              wall_fit_mode = ?, wall_tile_bg = ?, wall_tile_bg_color = ?, mirror_front_wall = ?,
+             wall_qr_side_enabled = ?, wall_qr_hidden = ?, wall_qr_side = ?, wall_qr_size = ?,
+             wall_qr_valign = ?, wall_qr_bg_color = ?, wall_qr_bg_opacity = ?, wall_qr_show_title = ?,
              qr_logo_shape = ?, qr_logo_fit = ?, qr_logo_scale = ?, qr_logo_padding = ?, qr_logo_bg = ?, qr_fg = ?, qr_bg = ?,
              state_version = state_version + 1, last_action_by = ?, last_action_summary = ?, last_action_at = ?
              WHERE id = ?',
@@ -215,6 +242,8 @@ class AdminApiController
                 $title, $wallKey, $status, $joinLocked, $maxPart, $maxFeeds,
                 $layout, $showLabels, $audioEnabled, $blackout, $logoImageId, $joinLogoImageId,
                 $wallFitMode, $wallTileBg, $wallTileBgColor, $mirrorFrontWall,
+                $wallQrSideEnabled, $wallQrHidden, $wallQrSide, $wallQrSize,
+                $wallQrValign, $wallQrBgColor, $wallQrBgOpacity, $wallQrShowTitle,
                 $qrShape, $qrFit, $qrScale, $qrPadding, $qrLogoBg, $qrFg, $qrBg,
                 $user['display_name'], 'Updated event settings', utcNow(),
                 $eventId,

@@ -7,10 +7,21 @@ const urlParams = new URLSearchParams(window.location.search);
 const frameCheckEnabled = urlParams.get('framecheck') === '1';
 
 const el = {
+  stage: document.getElementById('wall-stage'),
+  liveLayout: document.getElementById('wall-live-layout'),
+  videoArea: document.getElementById('wall-video-area'),
+  qrPanel: document.getElementById('wall-qr-panel'),
+  qrPanelInner: document.getElementById('wall-qr-panel-inner'),
+  panelTitle: document.getElementById('wall-panel-title'),
+  panelBox: document.getElementById('wall-panel-box'),
+  qrSideCanvas: document.getElementById('wall-qr-side-canvas'),
+  panelStatus: document.getElementById('wall-panel-status'),
   qrIdle: document.getElementById('wall-qr-idle'),
   qrCanvas: document.getElementById('wall-qr-canvas'),
+  idleStatus: document.getElementById('wall-idle-status'),
   qrCorner: document.getElementById('wall-qr-corner'),
   qrCornerCanvas: document.getElementById('wall-qr-corner-canvas'),
+  cornerStatus: document.getElementById('wall-corner-status'),
   eventTitle: document.getElementById('wall-event-title'),
   grid: document.getElementById('wall-grid'),
   blackout: document.getElementById('wall-blackout'),
@@ -25,6 +36,40 @@ const prevBytesMap = new Map();
 let lastQrSig = '';
 let activeSlots = [];
 let wallAudioEnabled = false;
+
+function syncStageScale() {
+  if (!el.stage) return;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (Math.abs(vw - 1920) <= 1 && Math.abs(vh - 1080) <= 1) {
+    el.stage.style.transform = 'none';
+    return;
+  }
+  const scale = Math.min(vw / 1920, vh / 1080);
+  el.stage.style.transform = scale > 0 ? `scale(${scale})` : 'none';
+}
+
+window.addEventListener('resize', syncStageScale);
+syncStageScale();
+
+function hexToRgba(hex, opacityPct) {
+  const clean = String(hex || '#090d16').replace('#', '').trim();
+  const alpha = Math.max(0, Math.min(1, Number(opacityPct ?? 100) / 100));
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) {
+    return `rgba(9, 13, 22, ${alpha})`;
+  }
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function resolveQrStatusMessage(state) {
+  if (state.event_status === 'closed') return 'Event has ended';
+  if (state.join_locked) return 'Joining is closed';
+  if (state.is_full) return 'Event is full';
+  return null;
+}
 
 function resolveAudioEnabled(serverAudioEnabled) {
   if (cfg.isMonitor) return false; // Never play wall iframe audio directly inside admin monitor
@@ -48,9 +93,10 @@ function resolvePublicUrl(rawUrl) {
   }
 }
 
-async function syncQrRendering(qrConfig) {
+async function syncQrRendering(qrConfig, sideSize = 480) {
   const joinUrl = resolvePublicUrl(qrConfig.joinUrl || cfg.joinUrl);
-  const sig = JSON.stringify({ ...qrConfig, joinUrl });
+  const resolvedSideSize = Math.max(320, Math.min(560, Number(sideSize || 480)));
+  const sig = JSON.stringify({ ...qrConfig, joinUrl, resolvedSideSize, qrMode: cfg.qrMode });
   if (sig === lastQrSig) return;
   lastQrSig = sig;
   const baseOpts = {
@@ -65,7 +111,10 @@ async function syncQrRendering(qrConfig) {
     bg: qrConfig.bg,
   };
   await renderBrandedQR(el.qrCanvas, { ...baseOpts, size: 1360 });
-  if (cfg.qrMode === 'corner' || cfg.qrMode === 'on') {
+  if (cfg.qrMode === 'side' && el.qrSideCanvas) {
+    await renderBrandedQR(el.qrSideCanvas, { ...baseOpts, size: resolvedSideSize });
+  }
+  if (cfg.qrMode === 'corner' && el.qrCornerCanvas) {
     await renderBrandedQR(el.qrCornerCanvas, { ...baseOpts, size: 440 });
   }
 }
@@ -78,7 +127,7 @@ function closePeer(pid) {
   }
 }
 
-function createOrUpdateTile(slot, idx, showLabels, state) {
+function createOrUpdateTile(slot, idx, state) {
   let tile = tiles.get(slot.participant_id);
   if (!tile) {
     tile = createWallTile();
@@ -86,10 +135,11 @@ function createOrUpdateTile(slot, idx, showLabels, state) {
   }
 
   tile.root.dataset.pos = String(idx);
-  tile.nameEl.textContent = slot.display_name;
-  tile.msgEl.textContent = slot.message || '';
-  tile.msgEl.hidden = !slot.message;
-  tile.lowerEl.hidden = !showLabels;
+  // Zero text or lower-thirds over wall video
+  tile.nameEl.textContent = '';
+  tile.msgEl.textContent = '';
+  tile.msgEl.hidden = true;
+  tile.lowerEl.hidden = true;
 
   const fitMode = slot.fit_mode || state.wall_fit_mode || 'fit';
   const tileBg = state.wall_tile_bg || 'blur';
@@ -231,6 +281,63 @@ async function handleSignal(sig) {
   }
 }
 
+function applyQrStatusDisplay(statusMsg) {
+  const blocked = Boolean(statusMsg);
+  if (el.qrCanvas && el.idleStatus) {
+    el.qrCanvas.hidden = blocked;
+    el.idleStatus.hidden = !blocked;
+    el.idleStatus.textContent = statusMsg || '';
+  }
+  if (el.qrSideCanvas && el.panelStatus) {
+    el.qrSideCanvas.hidden = blocked;
+    el.panelStatus.hidden = !blocked;
+    el.panelStatus.textContent = statusMsg || '';
+  }
+  if (el.qrCornerCanvas && el.cornerStatus) {
+    el.qrCornerCanvas.hidden = blocked;
+    el.cornerStatus.hidden = !blocked;
+    el.cornerStatus.textContent = statusMsg || '';
+  }
+}
+
+function applySideQrLayout(state, hasLive) {
+  const sideQr = state.side_qr || {};
+  const size = Math.max(320, Math.min(560, Number(sideQr.size || 480)));
+  const side = sideQr.side === 'left' ? 'left' : 'right';
+  const valign = sideQr.valign === 'top' ? 'top' : 'center';
+  const bgRgba = hexToRgba(sideQr.bg_color || '#090d16', sideQr.bg_opacity ?? 100);
+  const showTitle = sideQr.show_title !== false;
+  const forceHidden = !!sideQr.hidden;
+  const sideEnabled = sideQr.enabled !== false;
+
+  const panelOpen = hasLive && cfg.qrMode === 'side' && sideEnabled && !forceHidden;
+  const showIdle = !hasLive && cfg.qrMode !== 'off' && !forceHidden;
+  const showCorner = hasLive && cfg.qrMode === 'corner' && !forceHidden;
+
+  el.liveLayout.dataset.qrSide = side;
+  el.liveLayout.style.setProperty('--qr-panel-w', `${size}px`);
+  el.liveLayout.style.setProperty('--qr-panel-bg', bgRgba);
+  el.liveLayout.classList.toggle('is-live', hasLive);
+
+  el.qrPanel.classList.toggle('is-panel-open', panelOpen);
+  el.qrPanelInner.classList.toggle('valign-top', valign === 'top');
+  el.qrPanelInner.classList.toggle('valign-center', valign !== 'top');
+  el.panelTitle.textContent = state.title || cfg.eventTitle;
+  el.panelTitle.hidden = !showTitle;
+
+  if (cfg.qrMode === 'off') {
+    el.qrIdle.hidden = true;
+  } else {
+    el.qrIdle.hidden = false;
+    el.qrIdle.classList.toggle('is-hidden', !showIdle);
+  }
+  el.qrCorner.hidden = !showCorner;
+
+  const statusMsg = resolveQrStatusMessage(state);
+  applyQrStatusDisplay(statusMsg);
+  return { panelOpen, showIdle, showCorner, size, hasStatusBlock: Boolean(statusMsg) };
+}
+
 async function handleWallState(state) {
   el.eventTitle.textContent = state.title || cfg.eventTitle;
   el.blackout.hidden = !state.blackout;
@@ -261,34 +368,26 @@ async function handleWallState(state) {
     }
   }
 
-  // Toggle idle QR vs live grid FIRST so QR/logo rendering never blocks live feed visibility
   const hasLive = activeSlots.length > 0;
-  if (!hasLive) {
-    el.grid.hidden = true;
-    el.qrIdle.hidden = cfg.qrMode === 'off';
-    el.qrCorner.hidden = true;
-  } else {
-    el.qrIdle.hidden = true;
-    el.grid.hidden = false;
+  if (hasLive) {
     el.grid.className = `wall-grid layout-${state.layout || 'single'}`;
-
     const now = Date.now();
     activeSlots.forEach((slot, idx) => {
       if (!slotSeenAt.has(slot.participant_id)) {
         slotSeenAt.set(slot.participant_id, now);
       }
-      const tile = createOrUpdateTile(slot, idx, !!state.show_labels, state);
+      const tile = createOrUpdateTile(slot, idx, state);
       if (tile.root.parentNode !== el.grid) {
         el.grid.appendChild(tile.root);
       }
     });
-
-    el.qrCorner.hidden = !(cfg.qrMode === 'corner' || cfg.qrMode === 'on');
   }
 
-  if (state.qr && (!hasLive || cfg.qrMode === 'corner' || cfg.qrMode === 'on')) {
+  const qrVis = applySideQrLayout(state, hasLive);
+
+  if (state.qr && !qrVis.hasStatusBlock && (qrVis.showIdle || qrVis.panelOpen || qrVis.showCorner || !hasLive)) {
     try {
-      await syncQrRendering(state.qr);
+      await syncQrRendering(state.qr, qrVis.size);
     } catch {
       // Keep live stage responsive even if branded QR rendering fails
     }

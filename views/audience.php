@@ -13,13 +13,9 @@ use function App\e;
 <body class="aud-body">
   <script id="app-config" type="application/json"><?= json_encode($config, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE) ?></script>
 
-  <main class="aud-shell">
-    <header class="aud-header">
+  <main class="aud-shell" id="aud-shell">
+    <header class="aud-header" id="aud-header">
       <div class="aud-event-title" id="aud-event-title"><?= e($config['eventTitle']) ?></div>
-      <div class="aud-status-bar status-waiting" id="aud-status-banner" hidden>
-        <span class="status-dot" id="aud-status-dot"></span>
-        <span id="aud-status-text">Waiting in lobby</span>
-      </div>
     </header>
 
     <section class="aud-inapp-warning" id="aud-inapp-warning" hidden>
@@ -48,38 +44,53 @@ use function App\e;
     </section>
 
     <section class="aud-stage" id="aud-step-stage" hidden>
-      <div class="aud-orient-hint" id="aud-orient-hint" hidden>
-        Landscape gives the best result on the big screen
+      <div class="aud-stage-topbar status-waiting" id="aud-stage-topbar">
+        <div class="aud-stage-status">
+          <span class="status-dot" id="aud-status-dot"></span>
+          <span id="aud-status-text">Waiting in lobby</span>
+        </div>
+        <div class="aud-guest-name" id="aud-guest-name"></div>
       </div>
 
       <div class="aud-video-wrap" id="aud-video-wrap">
-        <video id="aud-preview" autoplay playsinline muted></video>
-        <div class="aud-onair-frame" id="aud-onair-frame" hidden>
-          <span class="onair-tag">ON AIR</span>
-        </div>
+        <video id="aud-preview-bg" class="aud-preview-bg" autoplay playsinline muted aria-hidden="true"></video>
+        <video id="aud-preview" class="aud-preview-main" autoplay playsinline muted></video>
       </div>
 
-      <div class="aud-alert" id="aud-stage-error" hidden></div>
-
-      <div class="aud-controls">
-        <button type="button" class="btn btn-control" id="aud-mic-btn" aria-pressed="false">
-          <span class="ctrl-label" id="aud-mic-label">Mic On</span>
-        </button>
-        <button type="button" class="btn btn-control" id="aud-flip-btn">
-          <span class="ctrl-label">Flip Camera</span>
-        </button>
-        <button type="button" class="btn btn-danger" id="aud-leave-btn">
-          <span class="ctrl-label">Leave</span>
-        </button>
+      <div class="aud-controls-bar" id="aud-controls-bar">
+        <div class="aud-alert" id="aud-stage-error" hidden></div>
+        <div class="aud-controls">
+          <button type="button" class="btn btn-control" id="aud-mic-btn" aria-pressed="false">
+            <span class="ctrl-label" id="aud-mic-label">Mic On</span>
+          </button>
+          <button type="button" class="btn btn-control" id="aud-flip-btn">
+            <span class="ctrl-label">Flip Camera</span>
+          </button>
+          <button type="button" class="btn btn-danger" id="aud-leave-btn">
+            <span class="ctrl-label">Leave</span>
+          </button>
+        </div>
       </div>
     </section>
 
     <section class="aud-card aud-ended" id="aud-step-ended" hidden>
+      <div class="aud-status-bar status-warn" id="aud-ended-banner">
+        <span class="status-dot"></span>
+        <span id="aud-ended-banner-text">Disconnected</span>
+      </div>
       <h2 id="aud-ended-title">Session Ended</h2>
       <p id="aud-ended-desc">You have left the live wall.</p>
       <button type="button" class="btn btn-primary btn-lg" id="aud-rejoin-btn">Return to Join Screen</button>
     </section>
   </main>
+
+  <div class="aud-rotate-overlay" id="aud-rotate-overlay" hidden>
+    <div class="aud-rotate-card">
+      <div class="aud-rotate-icon" aria-hidden="true">📱</div>
+      <div class="aud-rotate-title">Please hold your phone upright</div>
+      <div class="aud-rotate-sub">Portrait mode is required for the live camera stage.</div>
+    </div>
+  </div>
 
   <div class="aud-modal-backdrop" id="aud-tos-modal" hidden>
     <div class="aud-modal" role="dialog" aria-modal="true" aria-labelledby="aud-tos-title">
