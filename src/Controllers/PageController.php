@@ -52,9 +52,10 @@ class PageController
     {
         $key = (string)($_GET['key'] ?? '');
         $event = Database::fetchOne(
-            'SELECT e.*, m.filename AS logo_filename
+            'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename
              FROM events e
              LEFT JOIN media_images m ON m.id = e.logo_image_id
+             LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
              WHERE e.slug = ?',
             [$slug]
         );
@@ -82,12 +83,15 @@ class PageController
             : 'obs';
 
         $joinUrl = Bootstrap::baseUrl() . '/join/' . rawurlencode($event['slug']);
+        $joinBrandFile = $event['join_logo_filename'] ?: $event['logo_filename'];
+        $joinLogoUrl = $joinBrandFile ? '/uploads/logos/' . rawurlencode($joinBrandFile) : null;
 
         $config = [
             'eventSlug' => $event['slug'],
             'eventTitle' => $event['title'],
             'wallKey' => $key,
             'joinUrl' => $joinUrl,
+            'joinLogoUrl' => $joinLogoUrl,
             'bg' => $bg,
             'audioOverride' => $audioOverride,
             'qrMode' => $qrMode,

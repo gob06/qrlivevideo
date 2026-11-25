@@ -15,41 +15,37 @@ $bgClass = 'wall-bg-' . $config['bg'];
 
   <div class="wall-viewport" id="wall-viewport">
     <main class="wall-stage" id="wall-stage">
-      <!-- Live 2-column CSS Grid (Video Area + Side QR Panel) -->
+      <!-- Unified Jumbotron 2-Panel Stage (Idle QR-only & Live Video + Side QR) -->
       <div class="wall-live-layout" id="wall-live-layout" data-qr-side="right">
         <section class="wall-video-area" id="wall-video-area">
-          <section class="wall-grid layout-single" id="wall-grid"></section>
+          <div class="wall-idle-prompt" id="wall-idle-prompt">
+            <span>SCAN TO SEE YOUR LIVE CAMERA ON THE JUMBOTRON.</span>
+          </div>
+          <section class="wall-grid layout-single" id="wall-grid" hidden></section>
         </section>
 
-        <aside class="wall-qr-panel" id="wall-qr-panel" aria-label="Join QR Panel">
+        <aside class="wall-qr-panel is-panel-open" id="wall-qr-panel" aria-label="Join QR Panel">
           <div class="wall-qr-panel-inner valign-center" id="wall-qr-panel-inner">
-            <div class="wall-qr-panel-title" id="wall-panel-title"><?= e($config['eventTitle']) ?></div>
+            <div class="wall-panel-logo-wrap" id="wall-panel-logo-wrap" hidden>
+              <img class="wall-panel-logo" id="wall-panel-logo" alt="">
+            </div>
             <div class="wall-qr-panel-box" id="wall-panel-box">
-              <canvas id="wall-qr-side-canvas" width="480" height="480"></canvas>
+              <canvas id="wall-qr-side-canvas" width="500" height="500"></canvas>
               <div class="wall-qr-status-msg" id="wall-panel-status" hidden></div>
             </div>
-            <div class="wall-qr-panel-cta" id="wall-panel-cta">Scan to join the live</div>
           </div>
         </aside>
       </div>
 
-      <!-- Idle QR view -->
-      <section class="wall-qr-idle" id="wall-qr-idle">
-        <div class="wall-qr-card" id="wall-qr-card">
-          <div class="wall-qr-eyebrow" id="wall-event-title"><?= e($config['eventTitle']) ?></div>
-          <div class="wall-qr-canvas-wrap" id="wall-idle-canvas-wrap">
-            <canvas id="wall-qr-canvas" width="1360" height="1360"></canvas>
-            <div class="wall-qr-status-msg wall-qr-status-idle" id="wall-idle-status" hidden></div>
-          </div>
-          <div class="wall-qr-cta">Scan to join the live</div>
-        </div>
-      </section>
-
       <!-- Optional Corner QR while Live (?qr=corner) -->
       <aside class="wall-qr-corner" id="wall-qr-corner" hidden>
-        <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
-        <div class="wall-qr-status-msg wall-qr-status-corner" id="wall-corner-status" hidden></div>
-        <div class="wall-qr-corner-label">Scan to join the live</div>
+        <div class="wall-corner-logo-wrap" id="wall-corner-logo-wrap" hidden>
+          <img class="wall-corner-logo" id="wall-corner-logo" alt="">
+        </div>
+        <div class="wall-qr-corner-box">
+          <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
+          <div class="wall-qr-status-msg wall-qr-status-corner" id="wall-corner-status" hidden></div>
+        </div>
       </aside>
 
       <!-- Blackout Curtain -->

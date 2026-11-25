@@ -136,9 +136,10 @@ class WallApiController
     private static function verifyWall(string $slug, string $key): array
     {
         $event = Database::fetchOne(
-            'SELECT e.*, m.filename AS logo_filename
+            'SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename
              FROM events e
              LEFT JOIN media_images m ON m.id = e.logo_image_id
+             LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
              WHERE e.slug = ?',
             [$slug]
         );
@@ -193,10 +194,11 @@ class WallApiController
         }
         $pdo->commit();
 
-        $sideQrSize = max(320, min(560, (int)($event['wall_qr_size'] ?? 480)));
+        $sideQrSize = max(320, min(560, (int)($event['wall_qr_size'] ?? 500)));
         $sideQrSide = in_array(($event['wall_qr_side'] ?? 'right'), ['right', 'left'], true) ? (string)$event['wall_qr_side'] : 'right';
         $sideQrValign = in_array(($event['wall_qr_valign'] ?? 'center'), ['center', 'top'], true) ? (string)$event['wall_qr_valign'] : 'center';
         $sideQrOpacity = max(0, min(100, (int)($event['wall_qr_bg_opacity'] ?? 100)));
+        $joinBrandFile = $event['join_logo_filename'] ?: $event['logo_filename'];
 
         return [
             'event_status' => $event['status'],
@@ -218,13 +220,14 @@ class WallApiController
                 'side' => $sideQrSide,
                 'size' => $sideQrSize,
                 'valign' => $sideQrValign,
-                'bg_color' => (string)($event['wall_qr_bg_color'] ?? '#090d16'),
+                'bg_color' => (string)($event['wall_qr_bg_color'] ?? '#021048'),
                 'bg_opacity' => $sideQrOpacity,
                 'show_title' => (int)($event['wall_qr_show_title'] ?? 1) === 1,
             ],
             'qr' => [
                 'joinUrl' => Bootstrap::baseUrl() . '/join/' . rawurlencode($event['slug']),
                 'logoUrl' => $event['logo_filename'] ? '/uploads/logos/' . rawurlencode($event['logo_filename']) : null,
+                'joinLogoUrl' => $joinBrandFile ? '/uploads/logos/' . rawurlencode($joinBrandFile) : null,
                 'shape' => $event['qr_logo_shape'],
                 'fit' => $event['qr_logo_fit'],
                 'scale' => (int)$event['qr_logo_scale'],

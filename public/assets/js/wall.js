@@ -10,19 +10,19 @@ const el = {
   stage: document.getElementById('wall-stage'),
   liveLayout: document.getElementById('wall-live-layout'),
   videoArea: document.getElementById('wall-video-area'),
+  idlePrompt: document.getElementById('wall-idle-prompt'),
   qrPanel: document.getElementById('wall-qr-panel'),
   qrPanelInner: document.getElementById('wall-qr-panel-inner'),
-  panelTitle: document.getElementById('wall-panel-title'),
+  panelLogoWrap: document.getElementById('wall-panel-logo-wrap'),
+  panelLogo: document.getElementById('wall-panel-logo'),
   panelBox: document.getElementById('wall-panel-box'),
   qrSideCanvas: document.getElementById('wall-qr-side-canvas'),
   panelStatus: document.getElementById('wall-panel-status'),
-  qrIdle: document.getElementById('wall-qr-idle'),
-  qrCanvas: document.getElementById('wall-qr-canvas'),
-  idleStatus: document.getElementById('wall-idle-status'),
   qrCorner: document.getElementById('wall-qr-corner'),
+  cornerLogoWrap: document.getElementById('wall-corner-logo-wrap'),
+  cornerLogo: document.getElementById('wall-corner-logo'),
   qrCornerCanvas: document.getElementById('wall-qr-corner-canvas'),
   cornerStatus: document.getElementById('wall-corner-status'),
-  eventTitle: document.getElementById('wall-event-title'),
   grid: document.getElementById('wall-grid'),
   blackout: document.getElementById('wall-blackout'),
 };
@@ -34,6 +34,7 @@ const lastRenegAt = new Map(); // participantId -> timestamp ms
 const tiles = new Map(); // participantId -> wall-renderer tile
 const prevBytesMap = new Map();
 let lastQrSig = '';
+let lastJoinLogoUrl = '';
 let activeSlots = [];
 let wallAudioEnabled = false;
 
@@ -52,11 +53,49 @@ function syncStageScale() {
 window.addEventListener('resize', syncStageScale);
 syncStageScale();
 
+function bindLogoFallback(imgEl, wrapEl) {
+  if (!imgEl || !wrapEl) return;
+  imgEl.addEventListener('error', () => {
+    wrapEl.hidden = true;
+  });
+}
+
+bindLogoFallback(el.panelLogo, el.panelLogoWrap);
+bindLogoFallback(el.cornerLogo, el.cornerLogoWrap);
+
+function syncJoinLogoDisplay(logoUrl) {
+  const normalized = logoUrl ? String(logoUrl) : '';
+  if (normalized === lastJoinLogoUrl) return;
+  lastJoinLogoUrl = normalized;
+
+  if (el.panelLogoWrap && el.panelLogo) {
+    if (normalized) {
+      el.panelLogo.src = normalized;
+      el.panelLogoWrap.hidden = false;
+    } else {
+      el.panelLogo.removeAttribute('src');
+      el.panelLogoWrap.hidden = true;
+    }
+  }
+  if (el.cornerLogoWrap && el.cornerLogo) {
+    if (normalized) {
+      el.cornerLogo.src = normalized;
+      el.cornerLogoWrap.hidden = false;
+    } else {
+      el.cornerLogo.removeAttribute('src');
+      el.cornerLogoWrap.hidden = true;
+    }
+  }
+}
+
+// Render initial join logo immediately before first poll returns
+syncJoinLogoDisplay(cfg.joinLogoUrl || '');
+
 function hexToRgba(hex, opacityPct) {
-  const clean = String(hex || '#090d16').replace('#', '').trim();
+  const clean = String(hex || '#021048').replace('#', '').trim();
   const alpha = Math.max(0, Math.min(1, Number(opacityPct ?? 100) / 100));
   if (!/^[0-9a-fA-F]{6}$/.test(clean)) {
-    return `rgba(9, 13, 22, ${alpha})`;
+    return `rgba(2, 16, 72, ${alpha})`;
   }
   const r = parseInt(clean.slice(0, 2), 16);
   const g = parseInt(clean.slice(2, 4), 16);
@@ -93,9 +132,9 @@ function resolvePublicUrl(rawUrl) {
   }
 }
 
-async function syncQrRendering(qrConfig, sideSize = 480) {
+async function syncQrRendering(qrConfig, sideSize = 500) {
   const joinUrl = resolvePublicUrl(qrConfig.joinUrl || cfg.joinUrl);
-  const resolvedSideSize = Math.max(320, Math.min(560, Number(sideSize || 480)));
+  const resolvedSideSize = Math.max(320, Math.min(560, Number(sideSize || 500)));
   const sig = JSON.stringify({ ...qrConfig, joinUrl, resolvedSideSize, qrMode: cfg.qrMode });
   if (sig === lastQrSig) return;
   lastQrSig = sig;
@@ -110,8 +149,7 @@ async function syncQrRendering(qrConfig, sideSize = 480) {
     fg: qrConfig.fg,
     bg: qrConfig.bg,
   };
-  await renderBrandedQR(el.qrCanvas, { ...baseOpts, size: 1360 });
-  if (cfg.qrMode === 'side' && el.qrSideCanvas) {
+  if (el.qrSideCanvas && cfg.qrMode !== 'off') {
     await renderBrandedQR(el.qrSideCanvas, { ...baseOpts, size: resolvedSideSize });
   }
   if (cfg.qrMode === 'corner' && el.qrCornerCanvas) {
@@ -143,7 +181,7 @@ function createOrUpdateTile(slot, idx, state) {
 
   const fitMode = slot.fit_mode || state.wall_fit_mode || 'fit';
   const tileBg = state.wall_tile_bg || 'blur';
-  const tileBgColor = state.wall_tile_bg_color || '#090d16';
+  const tileBgColor = state.wall_tile_bg_color || '#020c3b';
 
   updateWallTileAppearance(tile, {
     fitMode,
@@ -283,11 +321,6 @@ async function handleSignal(sig) {
 
 function applyQrStatusDisplay(statusMsg) {
   const blocked = Boolean(statusMsg);
-  if (el.qrCanvas && el.idleStatus) {
-    el.qrCanvas.hidden = blocked;
-    el.idleStatus.hidden = !blocked;
-    el.idleStatus.textContent = statusMsg || '';
-  }
   if (el.qrSideCanvas && el.panelStatus) {
     el.qrSideCanvas.hidden = blocked;
     el.panelStatus.hidden = !blocked;
@@ -302,44 +335,45 @@ function applyQrStatusDisplay(statusMsg) {
 
 function applySideQrLayout(state, hasLive) {
   const sideQr = state.side_qr || {};
-  const size = Math.max(320, Math.min(560, Number(sideQr.size || 480)));
+  const size = Math.max(320, Math.min(560, Number(sideQr.size || 500)));
   const side = sideQr.side === 'left' ? 'left' : 'right';
   const valign = sideQr.valign === 'top' ? 'top' : 'center';
-  const bgRgba = hexToRgba(sideQr.bg_color || '#090d16', sideQr.bg_opacity ?? 100);
-  const showTitle = sideQr.show_title !== false;
+  const bgRgba = hexToRgba(sideQr.bg_color || '#021048', sideQr.bg_opacity ?? 92);
   const forceHidden = !!sideQr.hidden;
   const sideEnabled = sideQr.enabled !== false;
 
-  const panelOpen = hasLive && cfg.qrMode === 'side' && sideEnabled && !forceHidden;
-  const showIdle = !hasLive && cfg.qrMode !== 'off' && !forceHidden;
+  // Same 2-panel jumbotron theme on BOTH QR-only (idle) and QR-with-live-video pages.
+  // Only collapse right panel when ?qr=off, emergency hidden, corner mode while live, or live + side disabled.
+  const panelOpen = !forceHidden && (
+    cfg.qrMode === 'side'
+      ? (!hasLive || sideEnabled)
+      : (cfg.qrMode === 'corner' && !hasLive)
+  );
   const showCorner = hasLive && cfg.qrMode === 'corner' && !forceHidden;
 
   el.liveLayout.dataset.qrSide = side;
-  el.liveLayout.style.setProperty('--qr-panel-w', `${size}px`);
+  el.liveLayout.style.setProperty('--qr-size', `${size}px`);
   el.liveLayout.style.setProperty('--qr-panel-bg', bgRgba);
   el.liveLayout.classList.toggle('is-live', hasLive);
+  el.liveLayout.classList.toggle('is-panel-collapsed', !panelOpen);
+
+  if (el.idlePrompt) el.idlePrompt.hidden = hasLive;
+  if (el.grid) el.grid.hidden = !hasLive;
 
   el.qrPanel.classList.toggle('is-panel-open', panelOpen);
   el.qrPanelInner.classList.toggle('valign-top', valign === 'top');
   el.qrPanelInner.classList.toggle('valign-center', valign !== 'top');
-  el.panelTitle.textContent = state.title || cfg.eventTitle;
-  el.panelTitle.hidden = !showTitle;
 
-  if (cfg.qrMode === 'off') {
-    el.qrIdle.hidden = true;
-  } else {
-    el.qrIdle.hidden = false;
-    el.qrIdle.classList.toggle('is-hidden', !showIdle);
-  }
   el.qrCorner.hidden = !showCorner;
+
+  syncJoinLogoDisplay((state.qr && state.qr.joinLogoUrl) || cfg.joinLogoUrl || '');
 
   const statusMsg = resolveQrStatusMessage(state);
   applyQrStatusDisplay(statusMsg);
-  return { panelOpen, showIdle, showCorner, size, hasStatusBlock: Boolean(statusMsg) };
+  return { panelOpen, showCorner, size, hasStatusBlock: Boolean(statusMsg) };
 }
 
 async function handleWallState(state) {
-  el.eventTitle.textContent = state.title || cfg.eventTitle;
   el.blackout.hidden = !state.blackout;
   wallAudioEnabled = resolveAudioEnabled(state.audio_enabled);
 
@@ -385,7 +419,7 @@ async function handleWallState(state) {
 
   const qrVis = applySideQrLayout(state, hasLive);
 
-  if (state.qr && !qrVis.hasStatusBlock && (qrVis.showIdle || qrVis.panelOpen || qrVis.showCorner || !hasLive)) {
+  if (state.qr && !qrVis.hasStatusBlock && (qrVis.panelOpen || qrVis.showCorner)) {
     try {
       await syncQrRendering(state.qr, qrVis.size);
     } catch {

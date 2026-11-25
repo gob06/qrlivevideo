@@ -896,24 +896,21 @@ async function renderEventStudioView(eventId) {
                 </div>
                 <label class="field">
                   <span style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                    <span>QR Size: <strong id="sqr-size-val">480px</strong></span>
-                    <button type="button" class="btn btn-ghost btn-sm" id="sqr-reset-480" style="min-height:24px;padding:2px 8px;font-size:11px;">Reset 480px</button>
+                    <span>QR Size: <strong id="sqr-size-val">500px</strong></span>
+                    <button type="button" class="btn btn-ghost btn-sm" id="sqr-reset-500" style="min-height:24px;padding:2px 8px;font-size:11px;">Reset 500px</button>
                   </span>
-                  <input type="range" id="sqr-size" min="320" max="560" step="10" value="480">
+                  <input type="range" id="sqr-size" min="320" max="560" step="10" value="500">
                 </label>
                 <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:end;">
                   <label class="field">
                     <span>Panel Bg</span>
-                    <input type="color" id="sqr-bg-color" value="#090d16">
+                    <input type="color" id="sqr-bg-color" value="#021048">
                   </label>
                   <label class="field">
-                    <span>Background Opacity: <strong id="sqr-opacity-val">100%</strong></span>
-                    <input type="range" id="sqr-bg-opacity" min="0" max="100" step="5" value="100">
+                    <span>Background Opacity: <strong id="sqr-opacity-val">92%</strong></span>
+                    <input type="range" id="sqr-bg-opacity" min="0" max="100" step="5" value="92">
                   </label>
                 </div>
-                <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
-                  <input type="checkbox" id="sqr-show-title"> Show event title in side panel
-                </label>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
                   <button type="submit" class="btn btn-primary btn-sm">Save Side QR Panel</button>
                   <span class="page-meta">Wall URL override: <code>?qr=side|corner|off</code></span>
@@ -1452,21 +1449,19 @@ async function renderEventStudioView(eventId) {
       const bgColEl = document.getElementById('sqr-bg-color');
       const opEl = document.getElementById('sqr-bg-opacity');
       const opValEl = document.getElementById('sqr-opacity-val');
-      const titleEl = document.getElementById('sqr-show-title');
       if (!enEl || !sizeEl) return;
 
       enEl.checked = ev.wall_qr_side_enabled === undefined ? true : Number(ev.wall_qr_side_enabled) === 1;
       hidEl.checked = Number(ev.wall_qr_hidden || 0) === 1;
       sideEl.value = ev.wall_qr_side === 'left' ? 'left' : 'right';
       valignEl.value = ev.wall_qr_valign === 'top' ? 'top' : 'center';
-      const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 480)));
+      const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 500)));
       sizeEl.value = String(sz);
       sizeValEl.textContent = `${sz}px`;
-      bgColEl.value = ev.wall_qr_bg_color || '#090d16';
-      const op = ev.wall_qr_bg_opacity === undefined ? 100 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
+      bgColEl.value = ev.wall_qr_bg_color || '#021048';
+      const op = ev.wall_qr_bg_opacity === undefined ? 92 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
       opEl.value = String(op);
       opValEl.textContent = `${op}%`;
-      titleEl.checked = ev.wall_qr_show_title === undefined ? true : Number(ev.wall_qr_show_title) === 1;
     };
     syncSideQrInputs(initial.event);
 
@@ -1476,9 +1471,9 @@ async function renderEventStudioView(eventId) {
     document.getElementById('sqr-bg-opacity')?.addEventListener('input', (e) => {
       document.getElementById('sqr-opacity-val').textContent = `${e.target.value}%`;
     });
-    document.getElementById('sqr-reset-480')?.addEventListener('click', () => {
-      document.getElementById('sqr-size').value = '480';
-      document.getElementById('sqr-size-val').textContent = '480px';
+    document.getElementById('sqr-reset-500')?.addEventListener('click', () => {
+      document.getElementById('sqr-size').value = '500';
+      document.getElementById('sqr-size-val').textContent = '500px';
     });
     document.getElementById('side-qr-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1493,7 +1488,6 @@ async function renderEventStudioView(eventId) {
             wall_qr_size: Number(document.getElementById('sqr-size').value),
             wall_qr_bg_color: document.getElementById('sqr-bg-color').value,
             wall_qr_bg_opacity: Number(document.getElementById('sqr-bg-opacity').value),
-            wall_qr_show_title: document.getElementById('sqr-show-title').checked,
           },
         });
         pokeWallIframe(wallIframe);
@@ -1858,20 +1852,18 @@ async function renderEventStudioView(eventId) {
         const sizeEl = document.getElementById('sqr-size');
         const bgColEl = document.getElementById('sqr-bg-color');
         const opEl = document.getElementById('sqr-bg-opacity');
-        const titleEl = document.getElementById('sqr-show-title');
         if (enEl && sizeEl) {
           enEl.checked = ev.wall_qr_side_enabled === undefined ? true : Number(ev.wall_qr_side_enabled) === 1;
           hidEl.checked = Number(ev.wall_qr_hidden || 0) === 1;
           sideEl.value = ev.wall_qr_side === 'left' ? 'left' : 'right';
           valignEl.value = ev.wall_qr_valign === 'top' ? 'top' : 'center';
-          const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 480)));
+          const sz = Math.max(320, Math.min(560, Number(ev.wall_qr_size || 500)));
           sizeEl.value = String(sz);
           document.getElementById('sqr-size-val').textContent = `${sz}px`;
-          bgColEl.value = ev.wall_qr_bg_color || '#090d16';
-          const op = ev.wall_qr_bg_opacity === undefined ? 100 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
+          bgColEl.value = ev.wall_qr_bg_color || '#021048';
+          const op = ev.wall_qr_bg_opacity === undefined ? 92 : Math.max(0, Math.min(100, Number(ev.wall_qr_bg_opacity)));
           opEl.value = String(op);
           document.getElementById('sqr-opacity-val').textContent = `${op}%`;
-          titleEl.checked = ev.wall_qr_show_title === undefined ? true : Number(ev.wall_qr_show_title) === 1;
         }
       }
       const prevEl = document.getElementById('ev-join-brand-preview');

@@ -52,7 +52,7 @@ class Database
 
     private static function ensureSchemaMigrations(PDO $pdo, string $driver): void
     {
-        $flag = Bootstrap::rootPath('storage/schema_v5.migrated');
+        $flag = Bootstrap::rootPath('storage/schema_v6.migrated');
         if (is_file($flag)) {
             return;
         }
@@ -75,11 +75,15 @@ class Database
                 $addMySqlCol('events', 'wall_qr_side_enabled', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER mirror_front_wall');
                 $addMySqlCol('events', 'wall_qr_hidden', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER wall_qr_side_enabled');
                 $addMySqlCol('events', 'wall_qr_side', "ENUM('right', 'left') NOT NULL DEFAULT 'right' AFTER wall_qr_hidden");
-                $addMySqlCol('events', 'wall_qr_size', 'SMALLINT UNSIGNED NOT NULL DEFAULT 480 AFTER wall_qr_side');
+                $addMySqlCol('events', 'wall_qr_size', 'SMALLINT UNSIGNED NOT NULL DEFAULT 500 AFTER wall_qr_side');
                 $addMySqlCol('events', 'wall_qr_valign', "ENUM('center', 'top') NOT NULL DEFAULT 'center' AFTER wall_qr_size");
-                $addMySqlCol('events', 'wall_qr_bg_color', "VARCHAR(20) NOT NULL DEFAULT '#090d16' AFTER wall_qr_valign");
+                $addMySqlCol('events', 'wall_qr_bg_color', "VARCHAR(20) NOT NULL DEFAULT '#021048' AFTER wall_qr_valign");
                 $addMySqlCol('events', 'wall_qr_bg_opacity', 'TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER wall_qr_bg_color');
                 $addMySqlCol('events', 'wall_qr_show_title', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER wall_qr_bg_opacity');
+                $pdo->exec("ALTER TABLE events MODIFY COLUMN wall_qr_size SMALLINT UNSIGNED NOT NULL DEFAULT 500");
+                $pdo->exec("ALTER TABLE events MODIFY COLUMN wall_qr_bg_color VARCHAR(20) NOT NULL DEFAULT '#021048'");
+                $pdo->exec("UPDATE events SET wall_qr_size = 500 WHERE wall_qr_size = 480");
+                $pdo->exec("UPDATE events SET wall_qr_bg_color = '#021048' WHERE wall_qr_bg_color = '#090d16'");
                 $addMySqlCol('participants', 'facing_mode', "VARCHAR(24) NOT NULL DEFAULT '' AFTER thumb_version");
                 $addMySqlCol('participants', 'capture_settings', 'TEXT DEFAULT NULL AFTER facing_mode');
                 $addMySqlCol('wall_slots', 'fit_mode', "ENUM('fit', 'fill', 'stretch') DEFAULT NULL AFTER participant_id");
@@ -110,11 +114,13 @@ class Database
                 $addSqliteCol('events', 'wall_qr_side_enabled', 'INTEGER NOT NULL DEFAULT 1');
                 $addSqliteCol('events', 'wall_qr_hidden', 'INTEGER NOT NULL DEFAULT 0');
                 $addSqliteCol('events', 'wall_qr_side', "TEXT NOT NULL DEFAULT 'right'");
-                $addSqliteCol('events', 'wall_qr_size', 'INTEGER NOT NULL DEFAULT 480');
+                $addSqliteCol('events', 'wall_qr_size', 'INTEGER NOT NULL DEFAULT 500');
                 $addSqliteCol('events', 'wall_qr_valign', "TEXT NOT NULL DEFAULT 'center'");
-                $addSqliteCol('events', 'wall_qr_bg_color', "TEXT NOT NULL DEFAULT '#090d16'");
+                $addSqliteCol('events', 'wall_qr_bg_color', "TEXT NOT NULL DEFAULT '#021048'");
                 $addSqliteCol('events', 'wall_qr_bg_opacity', 'INTEGER NOT NULL DEFAULT 100');
                 $addSqliteCol('events', 'wall_qr_show_title', 'INTEGER NOT NULL DEFAULT 1');
+                $pdo->exec("UPDATE events SET wall_qr_size = 500 WHERE wall_qr_size = 480");
+                $pdo->exec("UPDATE events SET wall_qr_bg_color = '#021048' WHERE wall_qr_bg_color = '#090d16'");
                 $addSqliteCol('participants', 'facing_mode', "TEXT NOT NULL DEFAULT ''");
                 $addSqliteCol('participants', 'capture_settings', "TEXT NOT NULL DEFAULT ''");
                 $addSqliteCol('wall_slots', 'fit_mode', 'TEXT DEFAULT NULL');

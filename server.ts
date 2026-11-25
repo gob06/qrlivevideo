@@ -308,13 +308,11 @@ async function fetchCloudflareIceServers(): Promise<IceServerEntry[]> {
         cfIceCache.lastError = '';
         cfIceCache.loggedFailKey = '';
       } else {
+        const isPermanentAuthOrMissing = res.status === 401 || res.status === 403 || res.status === 404;
         const isClientErr = res.status >= 400 && res.status < 500;
         cfIceCache.lastError = res.error;
-        cfIceCache.failUntil = Date.now() + (isClientErr ? 300_000 : 30_000);
-        if (cfIceCache.loggedFailKey !== cacheKey) {
-          cfIceCache.loggedFailKey = cacheKey;
-          console.info(`[CF TURN] Fallback to STUN (${cfIceCache.lastError})`);
-        }
+        cfIceCache.failUntil = Date.now() + (isPermanentAuthOrMissing ? 3_600_000 : (isClientErr ? 300_000 : 30_000));
+        cfIceCache.loggedFailKey = cacheKey;
       }
       return cfIceCache.servers;
     } finally {
@@ -388,7 +386,230 @@ db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA busy_timeout = 5000;');
 
-const schemaSql = fs.readFileSync(path.join(ROOT, 'schema.sqlite.sql'), 'utf8');
+const EMBEDDED_SQLITE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('super_admin', 'host', 'moderator')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+    event_scope TEXT NOT NULL DEFAULT 'all' CHECK(event_scope IN ('all', 'assigned')),
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    last_login TEXT DEFAULT NULL,
+    created_by INTEGER DEFAULT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    session_token_hash TEXT NOT NULL UNIQUE,
+    csrf_token TEXT NOT NULL,
+    current_event_id INTEGER DEFAULT NULL,
+    last_seen TEXT NOT NULL,
+    ip_hash TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    label TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '',
+    file_hash TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    thumb_path TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'shared' CHECK(visibility IN ('shared', 'private')),
+    is_default INTEGER NOT NULL DEFAULT 0,
+    uploaded_by INTEGER DEFAULT NULL REFERENCES admins(id) ON DELETE SET NULL,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    wall_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'closed')),
+    join_locked INTEGER NOT NULL DEFAULT 0,
+    max_participants INTEGER NOT NULL DEFAULT 100,
+    max_wall_feeds INTEGER NOT NULL DEFAULT 4,
+    layout TEXT NOT NULL DEFAULT 'single' CHECK(layout IN ('single', 'split2', 'grid4', 'pip')),
+    show_labels INTEGER NOT NULL DEFAULT 1,
+    audio_enabled INTEGER NOT NULL DEFAULT 0,
+    blackout INTEGER NOT NULL DEFAULT 0,
+    wall_fit_mode TEXT NOT NULL DEFAULT 'fit',
+    wall_tile_bg TEXT NOT NULL DEFAULT 'blur',
+    wall_tile_bg_color TEXT NOT NULL DEFAULT '#090d16',
+    mirror_front_wall INTEGER NOT NULL DEFAULT 0,
+    wall_qr_side_enabled INTEGER NOT NULL DEFAULT 1,
+    wall_qr_hidden INTEGER NOT NULL DEFAULT 0,
+    wall_qr_side TEXT NOT NULL DEFAULT 'right',
+    wall_qr_size INTEGER NOT NULL DEFAULT 500,
+    wall_qr_valign TEXT NOT NULL DEFAULT 'center',
+    wall_qr_bg_color TEXT NOT NULL DEFAULT '#021048',
+    wall_qr_bg_opacity INTEGER NOT NULL DEFAULT 92,
+    wall_qr_show_title INTEGER NOT NULL DEFAULT 1,
+    logo_image_id INTEGER DEFAULT NULL REFERENCES media_images(id) ON DELETE SET NULL,
+    join_logo_image_id INTEGER DEFAULT NULL REFERENCES media_images(id) ON DELETE SET NULL,
+    qr_logo_shape TEXT NOT NULL DEFAULT 'square' CHECK(qr_logo_shape IN ('square', 'circle')),
+    qr_logo_fit TEXT NOT NULL DEFAULT 'contain' CHECK(qr_logo_fit IN ('contain', 'cover')),
+    qr_logo_scale INTEGER NOT NULL DEFAULT 18,
+    qr_logo_padding INTEGER NOT NULL DEFAULT 8,
+    qr_logo_bg TEXT NOT NULL DEFAULT '#ffffff',
+    qr_fg TEXT NOT NULL DEFAULT '#000000',
+    qr_bg TEXT NOT NULL DEFAULT '#ffffff',
+    state_version INTEGER NOT NULL DEFAULT 1,
+    last_action_by TEXT NOT NULL DEFAULT '',
+    last_action_summary TEXT NOT NULL DEFAULT '',
+    last_action_at TEXT DEFAULT NULL,
+    peak_concurrent INTEGER NOT NULL DEFAULT 0,
+    total_joined INTEGER NOT NULL DEFAULT 0,
+    total_kicked_banned INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER DEFAULT NULL REFERENCES admins(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_event_access (
+    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    PRIMARY KEY (admin_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    session_token TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    name_hidden INTEGER NOT NULL DEFAULT 0,
+    muted_by_admin INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'waiting' CHECK(status IN ('waiting', 'onair', 'removed', 'banned', 'left')),
+    preview_admin_id INTEGER DEFAULT NULL REFERENCES admins(id) ON DELETE SET NULL,
+    preview_requested_at TEXT DEFAULT NULL,
+    last_seen TEXT NOT NULL,
+    joined_at TEXT NOT NULL,
+    thumbnail_data TEXT DEFAULT NULL,
+    thumb_version INTEGER NOT NULL DEFAULT 0,
+    facing_mode TEXT NOT NULL DEFAULT 'unknown',
+    capture_settings TEXT DEFAULT NULL,
+    ip_hash TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS wall_slots (
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    slot_no INTEGER NOT NULL,
+    participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+    fit_mode TEXT DEFAULT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, slot_no)
+);
+
+CREATE TABLE IF NOT EXISTS signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL DEFAULT 'obs',
+    direction TEXT NOT NULL CHECK(direction IN ('to_viewer', 'to_audience')),
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS stream_stats (
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+    reporter TEXT NOT NULL DEFAULT 'wall',
+    state TEXT NOT NULL DEFAULT 'new',
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    fps REAL NOT NULL DEFAULT 0,
+    bitrate INTEGER NOT NULL DEFAULT 0,
+    packet_loss REAL NOT NULL DEFAULT 0,
+    rtt REAL NOT NULL DEFAULT 0,
+    relay_type TEXT NOT NULL DEFAULT 'unknown',
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, participant_id, reporter)
+);
+
+CREATE TABLE IF NOT EXISTS wall_heartbeats (
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    viewer_id TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT NOT NULL,
+    resolution TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (event_id, viewer_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER DEFAULT NULL REFERENCES events(id) ON DELETE SET NULL,
+    admin_id INTEGER DEFAULT NULL REFERENCES admins(id) ON DELETE SET NULL,
+    admin_name TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    details TEXT NOT NULL,
+    ip_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    ip_hash TEXT NOT NULL DEFAULT '',
+    session_token TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    banned_by INTEGER DEFAULT NULL REFERENCES admins(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket_key TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL DEFAULT 1,
+    window_start INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_timeline (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions (admin_id, revoked);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_event ON admin_sessions (current_event_id, last_seen);
+CREATE INDEX IF NOT EXISTS idx_media_hash ON media_images (file_hash);
+CREATE INDEX IF NOT EXISTS idx_participants_event_status ON participants (event_id, status, last_seen);
+CREATE INDEX IF NOT EXISTS idx_signals_lookup ON signals (event_id, target_id, direction, consumed, id);
+CREATE INDEX IF NOT EXISTS idx_signals_part ON signals (event_id, participant_id, direction, consumed, id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_event ON audit_log (event_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_bans_event ON bans (event_id, ip_hash, session_token);
+CREATE INDEX IF NOT EXISTS idx_timeline_event ON event_timeline (event_id, id);
+`;
+
+const schemaFilePath = path.join(ROOT, 'schema.sqlite.sql');
+const schemaSql = fs.existsSync(schemaFilePath) ? fs.readFileSync(schemaFilePath, 'utf8') : EMBEDDED_SQLITE_SCHEMA;
 db.exec(schemaSql);
 const evCols = db.prepare('PRAGMA table_info(events)').all() as Array<{ name: string }>;
 if (!evCols.some((c) => c.name === 'join_logo_image_id')) {
@@ -416,16 +637,16 @@ if (!evCols.some((c) => c.name === 'wall_qr_side')) {
   db.exec("ALTER TABLE events ADD COLUMN wall_qr_side TEXT NOT NULL DEFAULT 'right'");
 }
 if (!evCols.some((c) => c.name === 'wall_qr_size')) {
-  db.exec('ALTER TABLE events ADD COLUMN wall_qr_size INTEGER NOT NULL DEFAULT 480');
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_size INTEGER NOT NULL DEFAULT 500');
 }
 if (!evCols.some((c) => c.name === 'wall_qr_valign')) {
   db.exec("ALTER TABLE events ADD COLUMN wall_qr_valign TEXT NOT NULL DEFAULT 'center'");
 }
 if (!evCols.some((c) => c.name === 'wall_qr_bg_color')) {
-  db.exec("ALTER TABLE events ADD COLUMN wall_qr_bg_color TEXT NOT NULL DEFAULT '#090d16'");
+  db.exec("ALTER TABLE events ADD COLUMN wall_qr_bg_color TEXT NOT NULL DEFAULT '#021048'");
 }
 if (!evCols.some((c) => c.name === 'wall_qr_bg_opacity')) {
-  db.exec('ALTER TABLE events ADD COLUMN wall_qr_bg_opacity INTEGER NOT NULL DEFAULT 100');
+  db.exec('ALTER TABLE events ADD COLUMN wall_qr_bg_opacity INTEGER NOT NULL DEFAULT 92');
 }
 if (!evCols.some((c) => c.name === 'wall_qr_show_title')) {
   db.exec('ALTER TABLE events ADD COLUMN wall_qr_show_title INTEGER NOT NULL DEFAULT 1');
@@ -440,6 +661,14 @@ if (!partCols.some((c) => c.name === 'capture_settings')) {
 const slotCols = db.prepare('PRAGMA table_info(wall_slots)').all() as Array<{ name: string }>;
 if (!slotCols.some((c) => c.name === 'fit_mode')) {
   db.exec('ALTER TABLE wall_slots ADD COLUMN fit_mode TEXT DEFAULT NULL');
+}
+if (!db.prepare("SELECT 1 FROM system_settings WHERE setting_key = 'wall_jumbotron_v1_migrated'").get()) {
+  db.exec('UPDATE events SET wall_qr_size = 500 WHERE wall_qr_size = 480');
+  db.exec("UPDATE events SET wall_qr_bg_color = '#021048' WHERE wall_qr_bg_color = '#090d16'");
+  db.exec("UPDATE events SET wall_qr_bg_opacity = 92 WHERE wall_qr_bg_opacity = 100");
+  db.prepare("INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES ('wall_jumbotron_v1_migrated', '1', ?)").run(
+    new Date().toISOString().slice(0, 19).replace('T', ' ')
+  );
 }
 
 function utcNow(offsetSec = 0): string {
@@ -1145,7 +1374,14 @@ app.get('/join/:slug', async (req, res) => {
 app.get('/wall/:slug', async (req, res) => {
   const slug = cleanSlug(req.params.slug);
   const key = String(req.query.key || '');
-  const event = dbGet<Record<string, unknown>>('SELECT * FROM events WHERE slug = ?', slug);
+  const event = dbGet<Record<string, unknown>>(
+    `SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename
+     FROM events e
+     LEFT JOIN media_images m ON m.id = e.logo_image_id
+     LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+     WHERE e.slug = ?`,
+    slug
+  );
   if (!event || String(event.wall_key) !== key) {
     res.status(403).type('html').send('<h1>Invalid or missing Wall Key</h1>');
     return;
@@ -1162,11 +1398,15 @@ app.get('/wall/:slug', async (req, res) => {
     ? String(req.query.mid || `mon_${crypto.randomBytes(4).toString('hex')}`).replace(/[^a-zA-Z0-9_-]/g, '')
     : 'obs';
 
+  const joinBrandFile = event.join_logo_filename || event.logo_filename;
+  const joinLogoUrl = joinBrandFile ? `/uploads/logos/${encodeURIComponent(String(joinBrandFile))}` : null;
+
   const config = {
     eventSlug: event.slug,
     eventTitle: event.title,
     wallKey: key,
     joinUrl: `${baseUrl(req)}/join/${encodeURIComponent(String(event.slug))}`,
+    joinLogoUrl,
     bg,
     audioOverride,
     qrMode,
@@ -1193,33 +1433,31 @@ app.get('/wall/:slug', async (req, res) => {
     <main class="wall-stage" id="wall-stage">
       <div class="wall-live-layout" id="wall-live-layout" data-qr-side="right">
         <section class="wall-video-area" id="wall-video-area">
-          <section class="wall-grid layout-single" id="wall-grid"></section>
+          <div class="wall-idle-prompt" id="wall-idle-prompt">
+            <span>SCAN TO SEE YOUR LIVE CAMERA ON THE JUMBOTRON.</span>
+          </div>
+          <section class="wall-grid layout-single" id="wall-grid" hidden></section>
         </section>
-        <aside class="wall-qr-panel" id="wall-qr-panel" aria-label="Join QR Panel">
+        <aside class="wall-qr-panel is-panel-open" id="wall-qr-panel" aria-label="Join QR Panel">
           <div class="wall-qr-panel-inner valign-center" id="wall-qr-panel-inner">
-            <div class="wall-qr-panel-title" id="wall-panel-title">${esc(config.eventTitle)}</div>
+            <div class="wall-panel-logo-wrap" id="wall-panel-logo-wrap" hidden>
+              <img class="wall-panel-logo" id="wall-panel-logo" alt="">
+            </div>
             <div class="wall-qr-panel-box" id="wall-panel-box">
-              <canvas id="wall-qr-side-canvas" width="480" height="480"></canvas>
+              <canvas id="wall-qr-side-canvas" width="500" height="500"></canvas>
               <div class="wall-qr-status-msg" id="wall-panel-status" hidden></div>
             </div>
-            <div class="wall-qr-panel-cta" id="wall-panel-cta">Scan to join the live</div>
           </div>
         </aside>
       </div>
-      <section class="wall-qr-idle" id="wall-qr-idle">
-        <div class="wall-qr-card" id="wall-qr-card">
-          <div class="wall-qr-eyebrow" id="wall-event-title">${esc(config.eventTitle)}</div>
-          <div class="wall-qr-canvas-wrap" id="wall-idle-canvas-wrap">
-            <canvas id="wall-qr-canvas" width="1360" height="1360"></canvas>
-            <div class="wall-qr-status-msg wall-qr-status-idle" id="wall-idle-status" hidden></div>
-          </div>
-          <div class="wall-qr-cta">Scan to join the live</div>
-        </div>
-      </section>
       <aside class="wall-qr-corner" id="wall-qr-corner" hidden>
-        <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
-        <div class="wall-qr-status-msg wall-qr-status-corner" id="wall-corner-status" hidden></div>
-        <div class="wall-qr-corner-label">Scan to join the live</div>
+        <div class="wall-corner-logo-wrap" id="wall-corner-logo-wrap" hidden>
+          <img class="wall-corner-logo" id="wall-corner-logo" alt="">
+        </div>
+        <div class="wall-qr-corner-box">
+          <canvas id="wall-qr-corner-canvas" width="440" height="440"></canvas>
+          <div class="wall-qr-status-msg wall-qr-status-corner" id="wall-corner-status" hidden></div>
+        </div>
       </aside>
       <div class="wall-blackout" id="wall-blackout" hidden></div>
     </main>
@@ -1867,7 +2105,11 @@ app.post('/api/audience/leave', (req, res) => {
 
 function verifyWall(slug: string, key: string) {
   const ev = dbGet<Record<string, unknown>>(
-    'SELECT e.*, m.filename AS logo_filename FROM events e LEFT JOIN media_images m ON m.id = e.logo_image_id WHERE e.slug = ?',
+    `SELECT e.*, m.filename AS logo_filename, jm.filename AS join_logo_filename
+     FROM events e
+     LEFT JOIN media_images m ON m.id = e.logo_image_id
+     LEFT JOIN media_images jm ON jm.id = e.join_logo_image_id
+     WHERE e.slug = ?`,
     slug
   );
   if (!ev || String(ev.wall_key) !== key) return null;
@@ -1899,10 +2141,11 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
     dbRun(`DELETE FROM signals WHERE id IN (${ph})`, ...signals.map((s) => s.id));
   }
 
-  const sideQrSize = Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 480)));
+  const sideQrSize = Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 500)));
   const sideQrSide = event.wall_qr_side === 'left' ? 'left' : 'right';
   const sideQrValign = event.wall_qr_valign === 'top' ? 'top' : 'center';
-  const sideQrOpacity = Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 100)));
+  const sideQrOpacity = Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 92)));
+  const joinBrandFile = event.join_logo_filename || event.logo_filename;
 
   return {
     event_status: event.status,
@@ -1924,13 +2167,14 @@ function buildWallState(req: Request, event: Record<string, unknown>, viewerId: 
       side: sideQrSide,
       size: sideQrSize,
       valign: sideQrValign,
-      bg_color: String(event.wall_qr_bg_color || '#090d16'),
+      bg_color: String(event.wall_qr_bg_color || '#021048'),
       bg_opacity: sideQrOpacity,
       show_title: Number(event.wall_qr_show_title ?? 1) === 1,
     },
     qr: {
       joinUrl: `${baseUrl(req)}/join/${encodeURIComponent(String(event.slug))}`,
       logoUrl: event.logo_filename ? `/uploads/logos/${encodeURIComponent(String(event.logo_filename))}` : null,
+      joinLogoUrl: joinBrandFile ? `/uploads/logos/${encodeURIComponent(String(joinBrandFile))}` : null,
       shape: event.qr_logo_shape,
       fit: event.qr_logo_fit,
       scale: Number(event.qr_logo_scale),
@@ -2264,13 +2508,13 @@ app.post('/api/admin/events/:id/settings', (req, res) => {
   const wallQrHidden = b.wall_qr_hidden !== undefined ? (b.wall_qr_hidden ? 1 : 0) : Number(event.wall_qr_hidden ?? 0);
   const wallQrSide = ['right', 'left'].includes(b.wall_qr_side) ? b.wall_qr_side : String(event.wall_qr_side || 'right');
   const wallQrSize = b.wall_qr_size !== undefined
-    ? Math.max(320, Math.min(560, Math.round(Number(b.wall_qr_size || 480))))
-    : Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 480)));
+    ? Math.max(320, Math.min(560, Math.round(Number(b.wall_qr_size || 500))))
+    : Math.max(320, Math.min(560, Number(event.wall_qr_size ?? 500)));
   const wallQrValign = ['center', 'top'].includes(b.wall_qr_valign) ? b.wall_qr_valign : String(event.wall_qr_valign || 'center');
-  const wallQrBgColor = b.wall_qr_bg_color !== undefined ? hexColor(b.wall_qr_bg_color, '#090d16', false) : String(event.wall_qr_bg_color || '#090d16');
+  const wallQrBgColor = b.wall_qr_bg_color !== undefined ? hexColor(b.wall_qr_bg_color, '#021048', false) : String(event.wall_qr_bg_color || '#021048');
   const wallQrBgOpacity = b.wall_qr_bg_opacity !== undefined
     ? Math.max(0, Math.min(100, Math.round(Number(b.wall_qr_bg_opacity))))
-    : Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 100)));
+    : Math.max(0, Math.min(100, Number(event.wall_qr_bg_opacity ?? 92)));
   const wallQrShowTitle = b.wall_qr_show_title !== undefined ? (b.wall_qr_show_title ? 1 : 0) : Number(event.wall_qr_show_title ?? 1);
 
   dbRun(

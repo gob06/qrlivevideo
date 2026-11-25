@@ -215,13 +215,13 @@ class AdminApiController
             : (string)($event['wall_qr_side'] ?? 'right');
         $wallQrSize = isset($in['wall_qr_size'])
             ? max(320, min(560, (int)$in['wall_qr_size']))
-            : max(320, min(560, (int)($event['wall_qr_size'] ?? 480)));
+            : max(320, min(560, (int)($event['wall_qr_size'] ?? 500)));
         $wallQrValign = isset($in['wall_qr_valign']) && in_array($in['wall_qr_valign'], ['center', 'top'], true)
             ? $in['wall_qr_valign']
             : (string)($event['wall_qr_valign'] ?? 'center');
         $wallQrBgColor = isset($in['wall_qr_bg_color'])
-            ? Validator::hexColor((string)$in['wall_qr_bg_color'], '#090d16', false)
-            : (string)($event['wall_qr_bg_color'] ?? '#090d16');
+            ? Validator::hexColor((string)$in['wall_qr_bg_color'], '#021048', false)
+            : (string)($event['wall_qr_bg_color'] ?? '#021048');
         $wallQrBgOpacity = isset($in['wall_qr_bg_opacity'])
             ? max(0, min(100, (int)$in['wall_qr_bg_opacity']))
             : max(0, min(100, (int)($event['wall_qr_bg_opacity'] ?? 100)));

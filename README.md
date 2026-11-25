@@ -9,8 +9,8 @@
 - **Signaling mode**: `SIGNALING_MODE=poll` (HTTP short polling at `700ms` during WebRTC negotiation and `2000ms` when idle). Setting `SIGNALING_MODE=auto` probes Server-Sent Events (`/api/*/stream`) first and falls back to polling automatically if the host buffers or kills long-lived PHP connections.
 - **Database driver**: `DB_DRIVER=sqlite` (`storage/local.sqlite`) for local development; `DB_DRIVER=mysql` for MariaDB on z.com.
 - **Image Bank quota**: `IMAGE_BANK_QUOTA_MB=200`.
-- **QR defaults**: Error Correction Level `H` whenever a logo is attached, logo scale `18%` (clamped `10%–22%`), padding `8px`, white background, minimum 4-module quiet zone, minimum `4.5:1` dark-on-light module contrast. At `480×480px` on the side QR panel, the maximum reliable logo size is **`22%`** (`7–9` center modules / `~105px` square badge including padding), keeping ≥2 Reed-Solomon error-correction margin codewords per block.
-- **Wall defaults**: Transparent background (`?bg=transparent`), `1920×1080` stage (uniformly scaled on non-16:9/smaller viewports), **`?qr=side`** (idle shows centered QR; live shows `480×1080` side QR panel on the right and `1440×1080` live video area on the left with zero text/labels over guest tiles), audio muted until enabled by host or `?audio=on`.
+- **QR defaults**: Error Correction Level `H` whenever a logo is attached, logo scale `18%` (clamped `10%–22%`), padding `8px`, white background, minimum 4-module quiet zone, minimum `4.5:1` dark-on-light module contrast. At `500×500px` on the side QR panel, the maximum reliable logo size is **`22%`** (`7–9` center modules / `~110px` square badge including padding), keeping ≥2 Reed-Solomon error-correction margin codewords per block.
+- **Wall defaults**: `1920×1080` jumbotron 2-panel navy/cyan stage (uniformly scaled on non-16:9/smaller viewports), **`?qr=side`** (idle displays `"SCAN TO SEE YOUR LIVE CAMERA ON THE JUMBOTRON."` alongside the `500×500` QR panel + audience join logo; live keeps the same glowing 2-panel layout with zero text/labels over guest tiles), audio muted until enabled by host or `?audio=on`.
 - **Cron-less cleanup**: Probabilistic garbage collection (~8% of API requests) purges consumed/stale WebRTC signals, expired sessions, old stats, and timed-out participants (>30s without heartbeat). An optional `cron_cleanup.php` script is also included.
 
 ---
@@ -24,10 +24,8 @@ qr-live-wall/
 ├── router.php              # Local PHP dev server router
 ├── install.php             # One-time DB migration + Super Admin seeder (locks via storage/install.lock)
 ├── cron_cleanup.php        # Optional CLI cleanup script
-├── schema.sqlite.sql
 ├── schema.mariadb.sql
 ├── migrations/
-│   ├── 002_side_qr_panel.sqlite.sql
 │   └── 002_side_qr_panel.mariadb.sql
 ├── config/app.php
 ├── src/
@@ -151,7 +149,7 @@ Set `APP_URL=https://your-tunnel-url` and `TRUST_PROXY_HEADERS=true` in `.env` s
    - Optional URL parameters:
      - `?bg=transparent` (default), `?bg=black`, or `?bg=green`
      - `?audio=on` or `?audio=off` (overrides admin audio toggle)
-     - `?qr=side` (default: big centered QR when idle, animates smoothly in `400ms` into a `480×1080` side QR panel + `1440×1080` live video area when guests are on air without interrupting WebRTC), `?qr=corner` (legacy top-right corner QR while live), `?qr=off` (hides QR completely)
+     - `?qr=side` (default: 2-panel glowing navy/cyan jumbotron theme in both idle QR-only and live QR+video states, keeping WebRTC streams uninterrupted), `?qr=corner` (top-right corner QR while live), `?qr=off` (expands live video frame to fill stage)
      - `?framecheck=1` (overlays frame corner markers and resolution/crop telemetry on every live tile for setup testing)
    - Width: **`1920`**, Height: **`1080`**.
    - **Transform & Scaling (Important to prevent zooming/cropping)**:
@@ -161,10 +159,10 @@ Set `APP_URL=https://your-tunnel-url` and `TRUST_PROXY_HEADERS=true` in `.env` s
    - **Uncheck** *"Shutdown source when not visible"* so the WebRTC connections and heartbeat stay warm when switching OBS scenes.
    - *"Refresh browser when scene becomes active"*: Leave unchecked during live shows to avoid dropping active WebRTC streams.
 3. **Side QR Panel, Branded Logo Size & Privacy**:
-   - **Side QR Panel Controls (Studio → Side QR Panel)**: Toggle **"Show side QR while live"**, switch left/right side, adjust QR size (`320–560px`, default **`480px`**), vertical alignment (`center` or `top`), background color/opacity, event title visibility, and a 1-click **"Hide QR"** emergency button in Studio & Monitor.
-   - **Max Reliable Logo Size at 480px**: At `480×480px` with ECC Level `H` and a 4-module quiet zone, typical event join URLs encode at Version 3–4 (`29–33` modules, `~11–12px/module`). Keep **Logo Size ≤ 22%** (`7–9` center modules / up to `~105px` total badge including padding) and contrast ≥ `4.5:1` so phones scan reliably at distance.
-   - **Privacy Separation**: The wall page (`views/wall.php` / `/wall/{slug}`) never includes guest names/lower-thirds, readable short join URLs, or waiting counts in the HTML DOM or `/api/wall/*` polling payloads. Readable Join URL + Copy button + real-time waiting count appear only inside the authenticated **Admin-only info strip** below the Wall Output monitor.
-   - **Existing Installations**: Run `migrations/002_side_qr_panel.mariadb.sql` (MariaDB) or `migrations/002_side_qr_panel.sqlite.sql` (SQLite); PHP (`src/Database.php`) and Node (`server.ts`) also apply idempotent column checks automatically on startup.
+   - **Side QR Panel Controls (Studio → Side QR Panel)**: Toggle **"Show side QR while live"**, switch left/right side, adjust QR size (`320–560px`, default **`500px`**), vertical alignment (`center` or `top`), background color/opacity, and a 1-click **"Hide QR"** emergency button in Studio & Monitor.
+   - **Max Reliable Logo Size at 500px**: At `500×500px` with ECC Level `H` and a 4-module quiet zone, typical event join URLs encode at Version 3–4 (`29–33` modules, `~12px/module`). Keep **Logo Size ≤ 22%** (`7–9` center modules / up to `~110px` total badge including padding) and contrast ≥ `4.5:1` so phones scan reliably at distance.
+   - **Privacy Separation**: The wall page (`views/wall.php` / `/wall/{slug}`) never includes guest names/lower-thirds, readable short join URLs, event title banners, or waiting counts in the HTML DOM or `/api/wall/*` polling payloads. Readable Join URL + Copy button + real-time waiting count appear only inside the authenticated **Admin-only info strip** below the Wall Output monitor.
+   - **Existing Installations**: Run `migrations/002_side_qr_panel.mariadb.sql` on MariaDB; PHP (`src/Database.php`) and Node (`server.ts`) also apply idempotent column checks automatically on startup.
 4. **Fit Mode & Tile Background**:
    - Wall tiles default to **Fit (no crop)** (`object-fit: contain`) with **Blurred video fill** (`wall_tile_bg=blur`), so portrait or 4:3 phones never get zoomed in or clipped. Hosts can adjust **Fit Mode** (`Fit`, `Fill`, or `Stretch` under Advanced) and **Tile Background** (`Blurred`, `Solid`, `Transparent`) globally in Studio Settings or per slot.
 5. **Custom CSS Tip**: Leave OBS Custom CSS empty for default transparency (`?bg=transparent`), or use OBS scenes behind the Browser Source.
